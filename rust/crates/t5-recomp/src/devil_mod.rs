@@ -406,6 +406,7 @@ fn retarget_cameras(m: &mut Machine, from: u32, to: u32) {
     }
 }
 const CIRCLE: u32 = 0x2000;
+const CROSS: u32 = 0x4000;
 
 /// matty debug tree entries that run without arguments (0x356130..; DevilWithin.md).
 const HEAL_30: u32 = 0x001D_92B0;
@@ -733,6 +734,12 @@ struct State {
     /// the target's team before a swap).
     switched: Option<(u32, i16, u32, i16, Vec<(u32, i16)>)>,
     god: bool,
+    /// Debug mode (the mod menu may be opened), switched by the Konami code in game; it holds for
+    /// one run: `debug_game` is the GAME MAIN task it was switched on in.
+    debug_on: bool,
+    debug_game: u32,
+    /// Buttons of the Konami code entered so far.
+    konami: usize,
     devil: bool,
     /// Teams on take over: the controlled character gets the player's team, every other
     /// character (the original player too) the enemies' team; all hit each other like the
@@ -1125,6 +1132,70 @@ fn stage_name(m: &Machine, i: usize) -> String {
     if i == 0 && EXTRA_STAGES.iter().any(|e| e.name == Some(n.as_str())) { "lab_A".into() } else { n }
 }
 
+/// GAME MAIN (0x10D4E8 creates it for a run, 0x10E270 clears the pointer).
+const GAME_MAIN: u32 = 0x0041_B040;
+/// The Konami code: up, up, down, down, left, right, left, right, cross, circle (libpad bits).
+const KONAMI: [u32; 10] = [UP, UP, DOWN, DOWN, LEFT, RIGHT, LEFT, RIGHT, CROSS, CIRCLE];
+const PAD_BUTTONS: u32 = 0xFFF9;
+
+/// One step of the Konami code with the buttons pressed this vblank; true when it is complete.
+fn konami(st: &mut State, new: u32) -> bool {
+    let pressed = new & PAD_BUTTONS;
+    if pressed == 0 {
+        return false;
+    }
+    st.konami = if pressed == KONAMI[st.konami] {
+        st.konami + 1
+    } else if pressed == KONAMI[0] {
+        1
+    } else {
+        0
+    };
+    if st.konami == KONAMI.len() {
+        st.konami = 0;
+        return true;
+    }
+    false
+}
+
+/// Debug mode on or off; off closes the mod menu and ends its lasting effects (unlimited
+/// health / devil gauge, no clip).
+fn set_debug(st: &mut State, on: bool) {
+    st.debug_on = on;
+    if !on {
+        st.open = false;
+        st.god = false;
+        st.devil = false;
+        st.noclip = None;
+        ps2_runtime::pad::BLOCK.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// In game: a run (GAME MAIN) with a player character and no menu or screen over it. Menus put
+/// up caption tasks (`MT_CAPTION`: pause, results, main menu; none while playing, RAM 18.10.);
+/// `PAD_PAUSE` is the controller-disconnected pause, the 2D tasks the intermission texts and
+/// the instructions.
+fn in_game(m: &Machine) -> bool {
+    if word(m, GAME_MAIN) == 0 || player(m) == 0 {
+        return false;
+    }
+    let mut t = word(m, TASK_POOL + 8);
+    for _ in 0..4096 {
+        if t == 0 {
+            return true;
+        }
+        let name = word(m, t + 0x1C);
+        if name != 0 {
+            let n = cstr(m, name);
+            if n == "MT_CAPTION" || n == "PAD_PAUSE" || n.starts_with("2D For ") {
+                return false;
+            }
+        }
+        t = word(m, t + 0x18);
+    }
+    true
+}
+
 /// Every vertical blank while Devil Within runs: input, effects, menu text.
 pub fn update(m: &mut Machine, out: &mut String) {
     let mut g = STATE.lock().unwrap();
@@ -1150,6 +1221,9 @@ pub fn update(m: &mut Machine, out: &mut String) {
         stage_restore: 0,
         switched: None,
         god: false,
+        debug_on: false,
+        debug_game: 0,
+        konami: 0,
         devil: false,
         swap_team: true,
         probe: false,
@@ -1236,8 +1310,26 @@ pub fn update(m: &mut Machine, out: &mut String) {
     }
     let new = held & !st.prev_held;
     st.prev_held = held;
+    // Debug mode ends with its run (a new game, loaded data, the title: another GAME MAIN).
+    let game = word(m, GAME_MAIN);
+    if st.debug_on && game != st.debug_game {
+        set_debug(st, false);
+        ps2_runtime::diag::log("devil mod: debug mode ended with its run".into());
+    }
+    let playing = in_game(m);
+    if !st.open && playing {
+        if konami(st, new) {
+            let on = !st.debug_on;
+            set_debug(st, on);
+            st.debug_game = game;
+            crate::devil_debug::notify(if on { "Debug activated" } else { "Debug deactivated" }, on);
+        }
+    } else if !playing {
+        st.konami = 0;
+    }
     if held & (L3 | R3) == L3 | R3 && new & (L3 | R3) != 0 {
-        st.open = !st.open;
+        // Only in game (no menu) and with debug mode on; closing always works.
+        st.open = !st.open && st.debug_on && playing;
     }
     ps2_runtime::pad::BLOCK.store(st.open || crate::devil_debug::select_blocks(), std::sync::atomic::Ordering::Relaxed);
     if !st.open {
@@ -1451,7 +1543,7 @@ pub fn update(m: &mut Machine, out: &mut String) {
         })
         .unwrap_or_else(|| "-".into());
     let on = |b: bool| if b { "ON" } else { "OFF" };
-    out.push_str("MOD MENU (Devil Within, branch devil/debug)\n");
+    out.push_str("MOD MENU (Devil Within Mod)\n");
     for (i, e) in ENTRIES.iter().enumerate() {
         out.push_str(if i == st.cur { "> " } else { "  " });
         out.push_str(&match e {

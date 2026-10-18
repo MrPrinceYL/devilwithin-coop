@@ -169,7 +169,20 @@ mit Eintragsanzahl 0 (0x102FD8 löscht +0x3C, gezählt wird nur in Zustand 0, de
 Wiedereinstieg 0x1034A0 auslösen würde) → nächstes hoch/runter = Endlosschleife 0x1031E8
 (Nutzerbericht: Hänger nach CHARA VIEW). Der Hook setzt dann Zustand 0 (neu zählen), wie 0x1034A0.
 
-## 2b. Mod-Menü (immer aktiv, nicht 1:1)
+## 2b. Mod-Menü (nicht 1:1)
+
+**Freischalten wie ein GTA-Cheat (18.10.):** Das Menü geht nur **im Spiel** auf (ein Lauf =
+GAME MAIN `*0x41B040` ≠ 0, Spielerfigur vorhanden, kein Menü/Bildschirm darüber: keine Task
+`MT_CAPTION` – die legen Pause-, Ergebnis- und Hauptmenü an, beim Spielen gibt es keine –, kein
+`PAD_PAUSE`, keine „2D For INTERMISSION/INSTRUCTION“; Task-Liste `0x2A9A30+8`, Name +0x1C,
+nächste +0x18) und erst nach dem **Konami-Code** im Spiel: hoch, hoch, runter, runter, links,
+rechts, links, rechts, KREUZ, KREIS (`devil_mod::konami`, jede andere Taste setzt zurück).
+Dann erscheint oben rechts 2 s „Debug activated“ mit aufsteigendem Zwei-Ton-Gong (t5-bevy
+`update_notice`/`chime_sample`, B5→E6; die Mod meldet über `devil_debug::notify`/`NOTICE`),
+nochmal eingegeben „Debug deactivated“ mit absteigendem Gong (E6→G5), Menü zu, God/Devil/No clip
+aus. Der Debug-Modus gilt für den Lauf, in dem er an ging (`debug_game` = GAME MAIN): neues
+Spiel, Laden, Titel, Neustart über Pause → aus. Headless geprüft: L3+R3 vorher bleibt zu, nach
+dem Code öffnet es.
 
 `t5-recomp/src/devil_mod.rs`. Öffnen/Schließen: **L3 + R3** (Tastatur F + G). Solange das Menü
 offen ist, bekommt das Spiel keine Eingabe (`ps2_runtime::pad::BLOCK`: Port 1 liest „nichts
@@ -611,3 +624,28 @@ die matty-Funktionen (Abschnitt 2b: Leben +30 %, COLLECT-Flags).
   Namenstabelle 0x2B8558, Stufe 0–3, Modus 1/5/7).
 - ~~Ob `area/makino` ladbar ist~~ → ja, über MAP VIEWER (Eintrag 61) und die Stage-Selects (2b).
 - Easter Eggs (Tastenkombinationen) im normalen Spiel: noch keine Suche nach Pad-Abfragen.
+
+## Texte der Mod in den Spieldaten (18.10.)
+
+`t5-recomp/src/devil_text.rs`, Hook `kernel::IMAGE_PATCH` (läuft mit dem entpackten devil.elf,
+bevor es geladen wird): Die Pakete `common/base.pak`, `boot_us.pak`, `demo.pak`, `inst.pak`
+werden aus TK5DATA2 gelesen, ihre CAP-Texte ersetzt (`rebuild`: Index-Offsets mitziehen),
+das BDPK neu gepackt (`repack`: Einträge hinter einer gewachsenen CAP rücken um das Wachstum,
+auf 0x80 gerundet; Kopf +8 Gesamtgröße und +0x40..+0x4C, darunter **+0x48 = Beginn der
+Texturdaten**, auf die 0x10B098 das Paket nach dem Upload kürzt, rücken mit) und hinter
+TK5DATA2.BIN über das Disc-Abbild gelegt (`Disc::overlay`, Datei per `Disc::set_size`
+verlängert, sie ist die letzte der Disc). Das Dateiverzeichnis im ELF (0x362900, 0x146 × {Prüfsumme,
+Namensoffset ab 0x363D60, Offset in TK5DATA2, Größe}) zeigt dann auf die neuen Pakete; das Spiel
+lädt die geänderten Texte selbst.
+
+| CAP | alt | neu |
+|---|---|---|
+| menutext | return to mode select | return to devil within title |
+| account | exit devil within and return to the mode select screen. | return to devil within title screen. |
+| save (Speicherkarten-Meldungen) | tekken 5 | devil within |
+
+Der Hauptmenü-Eintrag macht jetzt, was der gleichnamige im Pausenmenü tut (0x104558 Zustand 9:
+0x103678(0), Titelbildschirm): `devil_debug::exit_to_title` setzt den Verlassen-Task 0x1040D0
+von Zustand 0x19 (LoadExecPS2 `SLUS_210.59`, im Direktstart ein Schwarzbild) auf den ungenutzten
+0x1A (Task beenden + 0x103678(1)) und danach den Titel-Task (`DAT_002aaaf4`, +0x54) von 1
+(Hauptmenü) auf 0 (Titel).

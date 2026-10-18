@@ -49,6 +49,26 @@ const HANGS: &[u32] = &[0x001F_7F88 /* HASHI TEST: every callback is `jr ra` */]
 /// The open debug menus and tools as text (empty: none), for the front end.
 pub static MENU_TEXT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// A short message in the top right corner with a chime (like GTA's "Cheat activated"), drawn
+/// and played by the front end: `seq` counts the messages, `rising` picks the chime.
+pub struct Notice {
+    pub seq: u64,
+    pub text: String,
+    pub at: std::time::Instant,
+    pub rising: bool,
+}
+
+pub static NOTICE: std::sync::Mutex<Option<Notice>> = std::sync::Mutex::new(None);
+
+/// Show `text` for a moment with the rising (activated) or falling (deactivated) chime.
+pub fn notify(text: &str, rising: bool) {
+    if let Ok(mut n) = NOTICE.lock() {
+        let seq = n.as_ref().map_or(1, |n| n.seq + 1);
+        *n = Some(Notice { seq, text: text.into(), at: std::time::Instant::now(), rising });
+    }
+    ps2_runtime::diag::log(format!("devil notice: {text}"));
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Title,

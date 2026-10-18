@@ -38,8 +38,11 @@ takes a while), later runs start in seconds. The Tekken 5 disc image is read fro
   Default keyboard: arrows / WASD = D-pad, X or Space = Cross, C = Circle, Z = Square,
   V = Triangle, Q / E = L1 / R1, 1 / 3 = L2 / R2, F / G = L3 / R3, Enter = Start,
   Tab / Right Shift = Select.
-- **Mod menu: L3 + R3** (keyboard F + G). While it is open the game gets no input; Up / Down
-  entry, Left / Right choice, Circle run. See `DevilWithin.md`, section 2b.
+- **Mod menu: L3 + R3** (keyboard F + G), in game only and only after entering the Konami code
+  in game (Up, Up, Down, Down, Left, Right, Left, Right, Cross, Circle; "Debug activated" shows
+  top right with a chime, entering it again deactivates it; it lasts until the next run). While
+  it is open the game gets no input; Up / Down entry, Left / Right choice, Circle run. See
+  `DevilWithin.md`, section 2b.
 - **Developer menus:** `T5_DW_DEBUG=title` (debug title menu with STAGE SELECT / SELECT DEVIL /
   EXTRA-DEBUG; Down past "back" lists Makino's test room and every boss fight) or
   `T5_DW_DEBUG=dev` (developer mode menu). Set it before `play.bat`
@@ -86,7 +89,9 @@ it unpacks the entry from the disc image (LZ format: a flag byte, its bits LSB f
 sentinel bit; 1 = literal byte, 0 = big-endian u16 back-reference with an 11-bit distance and a
 5-bit length; flag 0 ends) and starts it like ExecPS2. Devil Within reboots the IOP with
 `IOPRP300.IMG` and loads its modules from `IRXARC.BIN` itself, so it needs nothing from Tekken 5.
-Its "return to the mode select screen" (LoadExecPS2 of `SLUS_210.59`) starts Devil Within again.
+Its main menu's "return to mode select" is now "return to Devil Within title" (as in the pause
+menu) and goes to the title screen; the texts naming Tekken 5 are changed in the game data
+(`devil_text.rs`).
 
 ## Sheets
 

@@ -47,6 +47,14 @@ struct StatusText;
 #[derive(Component)]
 struct DebugMenuText;
 
+/// The mod's short messages (top right, like GTA's "Cheat activated"):
+/// t5_recomp::devil_debug::NOTICE.
+#[derive(Component)]
+struct NoticeText;
+
+/// How long a notice stays.
+const NOTICE_SECS: f32 = 2.0;
+
 fn main() {
     let shared = t5_recomp::boot();
     std::thread::Builder::new()
@@ -89,7 +97,7 @@ fn main() {
         .insert_resource(settings::Settings::load())
         .init_resource::<settings::MenuState>()
         .add_systems(Startup, (setup, input::setup_menu, settings::setup, settings::setup_fps))
-        .add_systems(Update, (show_frame, input::read_input, input::menu, settings::menu, fps_counter, update_status, toggle_overlay, fast_forward, update_debug_menu))
+        .add_systems(Update, (show_frame, input::read_input, input::menu, settings::menu, fps_counter, update_status, toggle_overlay, fast_forward, update_debug_menu, update_notice))
         .run();
 }
 
@@ -108,6 +116,9 @@ fn start_audio(src: Arc<AudioShared>) {
         let mut next = (0f32, 0f32);
         let mut playing = false;
         let mut rate_adj = 1f64;
+        // The notice chime (two notes), mixed over the game's sound: (rising, seconds played).
+        let mut chime: Option<(bool, f64)> = None;
+        let mut chime_seq = 0u64;
         // The SPU2 output arrives in bursts (whenever the EE services devices): play from a
         // ~60 ms cushion, steer its fill level with a slight resampling rate change instead of
         // dropping samples, and refill after an underrun instead of repeating the last sample.
@@ -128,6 +139,12 @@ fn start_audio(src: Arc<AudioShared>) {
                     rate_adj += (want - rate_adj) * 0.05;
                     let step = ps2_runtime::spu2::SAMPLE_RATE as f64 / out_rate * rate_adj;
                     let vol = f32::from_bits(settings::VOLUME.load(Relaxed));
+                    if let Ok(n) = t5_recomp::devil_debug::NOTICE.try_lock() {
+                        if let Some(n) = n.as_ref().filter(|n| n.seq != chime_seq) {
+                            chime_seq = n.seq;
+                            chime = Some((n.rising, 0.0));
+                        }
+                    }
                     for frame in data.chunks_mut(channels) {
                         pos += step;
                         while pos >= 1.0 {
@@ -142,8 +159,17 @@ fn start_audio(src: Arc<AudioShared>) {
                             }
                         }
                         let t = pos as f32;
-                        let l = (cur.0 * (1.0 - t) + next.0 * t) / 32768.0 * vol;
-                        let r = (cur.1 * (1.0 - t) + next.1 * t) / 32768.0 * vol;
+                        let mut l = (cur.0 * (1.0 - t) + next.0 * t) / 32768.0 * vol;
+                        let mut r = (cur.1 * (1.0 - t) + next.1 * t) / 32768.0 * vol;
+                        if let Some((rising, at)) = chime.as_mut() {
+                            let c = chime_sample(*rising, *at) * vol;
+                            l += c;
+                            r += c;
+                            *at += 1.0 / out_rate;
+                            if *at > CHIME_SECS {
+                                chime = None;
+                            }
+                        }
                         for (i, s) in frame.iter_mut().enumerate() {
                             *s = if i % 2 == 0 { l } else { r };
                         }
@@ -160,6 +186,23 @@ fn start_audio(src: Arc<AudioShared>) {
     if let Err(e) = result {
         ps2_runtime::diag::log(format!("audio output unavailable: {e}"));
     }
+}
+
+/// Length of the notice chime.
+const CHIME_SECS: f64 = 0.6;
+
+/// The notice chime at `t` seconds: two bell-like notes (a sine with its octave, decaying),
+/// rising B5 -> E6 for "activated", falling E6 -> G5 for "deactivated".
+fn chime_sample(rising: bool, t: f64) -> f32 {
+    let (a, b) = if rising { (987.77, 1318.51) } else { (1318.51, 783.99) };
+    let note = |f: f64, t: f64| -> f64 {
+        if t < 0.0 {
+            return 0.0;
+        }
+        let env = (-t * 7.0).exp() * (t * 400.0).min(1.0);
+        env * ((std::f64::consts::TAU * f * t).sin() + 0.3 * (std::f64::consts::TAU * 2.0 * f * t).sin())
+    };
+    (0.16 * (note(a, t) + note(b, t - 0.12))) as f32
 }
 
 fn new_image(w: u32, h: u32, smooth: bool) -> Image {
@@ -211,6 +254,15 @@ fn setup(
         Node { position_type: PositionType::Absolute, top: px(40), left: px(40), padding: UiRect::all(px(10)), ..default() },
         Visibility::Hidden,
         DebugMenuText,
+    ));
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: FontSize::Px(26.0), ..default() },
+        TextColor(Color::srgb(0.95, 0.95, 0.95)),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+        Node { position_type: PositionType::Absolute, top: px(32), right: px(32), padding: UiRect::axes(px(18), px(10)), ..default() },
+        Visibility::Hidden,
+        NoticeText,
     ));
     commands.insert_resource(Screen {
         frames,
@@ -321,6 +373,23 @@ fn update_debug_menu(mut q: Query<(&mut Text, &mut Visibility), With<DebugMenuTe
         }
         if t.0 != text {
             t.0 = text.clone();
+        }
+    }
+}
+
+/// The mod's notice (t5_recomp::devil_debug::NOTICE) for NOTICE_SECS after it was given.
+fn update_notice(mut q: Query<(&mut Text, &mut Visibility), With<NoticeText>>) {
+    let Ok(n) = t5_recomp::devil_debug::NOTICE.lock() else { return };
+    let text = n.as_ref().filter(|n| n.at.elapsed().as_secs_f32() < NOTICE_SECS).map(|n| n.text.clone());
+    for (mut t, mut v) in &mut q {
+        let want = if text.is_some() { Visibility::Visible } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+        if let Some(text) = &text {
+            if t.0 != *text {
+                t.0 = text.clone();
+            }
         }
     }
 }
