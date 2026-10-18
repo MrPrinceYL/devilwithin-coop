@@ -14,7 +14,9 @@ pub fn disc_path() -> String {
 pub mod devil_chars;
 pub mod devil_debug;
 pub mod devil_mod;
+pub mod devil_options;
 pub mod devil_text;
+pub mod devil_widescreen;
 
 pub fn boot() -> ps2_runtime::Shared {
     ps2_runtime::diag::init("t5_trace.log");

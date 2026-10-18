@@ -39,7 +39,7 @@ impl Gpu {
             crate::diag::log(format!("GPU {}: no SHADER_INT64", adapter.get_info().name));
             return None;
         }
-        let limits = wgpu::Limits { max_storage_buffer_binding_size: 256 << 20, max_buffer_size: 256 << 20, ..wgpu::Limits::default() };
+        let limits = wgpu::Limits { max_storage_buffer_binding_size: 256 << 20, max_buffer_size: 256 << 20, max_storage_buffers_per_shader_stage: 10, ..wgpu::Limits::default() };
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("gs"),
             required_features: wgpu::Features::SHADER_INT64,
@@ -80,6 +80,13 @@ pub struct GPrim {
 unsafe impl bytemuck::Zeroable for GPrim {}
 unsafe impl bytemuck::Pod for GPrim {}
 
+/// Render scale (1 = the console's resolution, bit-exact; 2..=4: `gs.wgsl` draws every batch
+/// also into S·S sub-pixel planes and reads the display out of them). Set by the front end.
+pub static RENDER_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+pub const MAX_SCALE: u32 = 4;
+/// Largest read-out at a scale > 1 (pixels); bigger displays use a smaller scale.
+const HR_OUT: usize = 2560 * 2048;
+
 const STATES: usize = 8192;
 const PRIMS: usize = 65536;
 const TILES: usize = 1 << 18;
@@ -97,6 +104,17 @@ enum Pipe {
     Upload,
     Copy,
     Clut,
+    RasterHr,
+    SerialHr,
+    Expand,
+    ReadoutHr,
+}
+
+/// A read-out for the read-out thread: local memory (`readout`) or the finished picture at a
+/// higher render scale (width, height).
+enum Readout {
+    Mem(usize, crate::gs::ReadoutJob),
+    Picture(usize, crate::gs::ReadoutJob, u32, u32),
 }
 
 /// The GS's local memory and rasterizer on the GPU. The GS thread records commands in GS order
@@ -111,8 +129,12 @@ pub struct GsGpu {
     lists: wgpu::Buffer,
     data: wgpu::Buffer,
     params: wgpu::Buffer,
+    /// Sub-pixel planes (render scale > 1) and the read-out picture made from them.
+    outb: wgpu::Buffer,
     bg: wgpu::BindGroup,
-    pipes: [wgpu::ComputePipeline; 5],
+    pipes: [wgpu::ComputePipeline; 9],
+    /// Render scale the recorded commands use.
+    scale: u32,
     st_words: Vec<u32>,
     st_index: std::collections::HashMap<usize, u32>,
     st_keep: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
@@ -121,7 +143,7 @@ pub struct GsGpu {
     lists_v: Vec<u32>,
     data_v: Vec<u32>,
     params_v: Vec<[u32; 64]>,
-    cmds: Vec<(Pipe, u32, u32)>,
+    cmds: Vec<(Pipe, u32, u32, u32)>,
     /// Per 16x16 tile of the 2048x2048 space: primitives of the batch being binned.
     tile_n: Vec<u32>,
     /// The CLUT slot the next primitive reads.
@@ -131,7 +153,10 @@ pub struct GsGpu {
     /// that reads them out.
     ring: Vec<(wgpu::Buffer, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     ring_next: usize,
-    ring_tx: Option<std::sync::mpsc::Sender<(usize, crate::gs::ReadoutJob)>>,
+    ring_tx: Option<std::sync::mpsc::Sender<Readout>>,
+    /// The same for pictures at a higher render scale.
+    pic_ring: Vec<(wgpu::Buffer, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    pic_next: usize,
 }
 
 /// Swizzle tables (offsets within a page per format, from `gs::addr*` themselves) and the
@@ -173,6 +198,10 @@ impl GsGpu {
     pub fn new(mem: &[u8], clut: &[u32; 256]) -> Option<GsGpu> {
         use wgpu::util::DeviceExt;
         let g = Gpu::new()?;
+        // T5_SCALE=<1..4>: render scale for measurement runs (the front end sets it otherwise).
+        if let Some(v) = std::env::var("T5_SCALE").ok().and_then(|v| v.parse::<u32>().ok()) {
+            RENDER_SCALE.store(v.clamp(1, MAX_SCALE), std::sync::atomic::Ordering::Relaxed);
+        }
         let d = &g.device;
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let buf = |label: &str, size: usize, usage: wgpu::BufferUsages| d.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: size as u64, usage, mapped_at_creation: false });
@@ -187,6 +216,8 @@ impl GsGpu {
         let cluts = d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cluts"), contents: bytemuck::cast_slice(&cl), usage: storage });
         let data = buf("data", DATA * 4, storage);
         let params = buf("params", PARAMS * 256, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+        let hr = buf("hr", crate::gs::VRAM * (MAX_SCALE * MAX_SCALE) as usize, storage);
+        let outb = buf("readout picture", HR_OUT * 4, storage | wgpu::BufferUsages::COPY_SRC);
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gs.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("gs.wgsl").into()) });
         let sto = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
             binding,
@@ -211,6 +242,8 @@ impl GsGpu {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: std::num::NonZeroU64::new(64) },
                     count: None,
                 },
+                sto(9, false),
+                sto(10, false),
             ],
         });
         let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -226,11 +259,23 @@ impl GsGpu {
                 wgpu::BindGroupEntry { binding: 6, resource: cluts.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: data.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &params, offset: 0, size: std::num::NonZeroU64::new(64) }) },
+                wgpu::BindGroupEntry { binding: 9, resource: hr.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 10, resource: outb.as_entire_binding() },
             ],
         });
         let pl = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("gs"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipe = |entry: &str| d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some(entry), layout: Some(&pl), module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: None });
-        let pipes = [pipe("raster"), pipe("raster_serial"), pipe("upload"), pipe("copy"), pipe("clut")];
+        let pipes = [
+            pipe("raster"),
+            pipe("raster_serial"),
+            pipe("upload"),
+            pipe("copy"),
+            pipe("clut"),
+            pipe("raster_hr"),
+            pipe("raster_serial_hr"),
+            pipe("expand"),
+            pipe("readout_hr"),
+        ];
         Some(GsGpu {
             vram,
             states,
@@ -239,8 +284,10 @@ impl GsGpu {
             lists,
             data,
             params,
+            outb,
             bg,
             pipes,
+            scale: 1,
             st_words: Vec::new(),
             st_index: Default::default(),
             st_keep: Vec::new(),
@@ -256,6 +303,8 @@ impl GsGpu {
             ring: Vec::new(),
             ring_next: 0,
             ring_tx: None,
+            pic_ring: Vec::new(),
+            pic_next: 0,
             g,
         })
     }
@@ -263,6 +312,7 @@ impl GsGpu {
     fn param(&mut self, p: [u32; 16]) -> u32 {
         let mut w = [0u32; 64];
         w[..16].copy_from_slice(&p);
+        w[15] = self.scale;
         self.params_v.push(w);
         (self.params_v.len() - 1) as u32
     }
@@ -270,7 +320,7 @@ impl GsGpu {
     /// Room for one more command with `prims` primitives and `words` transfer data (submits
     /// what is recorded if not).
     pub fn reserve(&mut self, prims: usize, words: usize) {
-        if self.params_v.len() + 1 > PARAMS
+        if self.params_v.len() + 2 > PARAMS
             || self.prims_v.len() + prims > PRIMS
             || self.st_words.len() / STATE_WORDS + prims > STATES
             || self.tiles_v.len() + 128 * 128 > TILES
@@ -279,6 +329,8 @@ impl GsGpu {
         {
             self.submit();
         }
+        // A new render scale starts here (before the command is recorded).
+        self.sync_scale();
     }
 
     /// The index of state `key` (kept alive by `keep` until the submit), packed by `words`.
@@ -291,6 +343,25 @@ impl GsGpu {
         self.st_index.insert(key, i);
         self.st_keep.push(keep);
         i
+    }
+
+    /// Take over a new RENDER_SCALE before recording more (planes filled from local memory).
+    fn sync_scale(&mut self) {
+        let want = RENDER_SCALE.load(std::sync::atomic::Ordering::Relaxed).clamp(1, MAX_SCALE);
+        if want == self.scale {
+            return;
+        }
+        self.scale = want;
+        if want > 1 {
+            let p = self.param([0; 16]);
+            self.cmds.push((Pipe::Expand, p, (crate::gs::VRAM / 4 / 256) as u32, 1));
+        }
+        crate::diag::log(format!("GS render scale {want}"));
+    }
+
+    /// The render scale of what is recorded now.
+    pub fn scale(&self) -> u32 {
+        self.scale
     }
 
     pub fn prim_count(&self) -> usize {
@@ -308,9 +379,13 @@ impl GsGpu {
         if count == 0 {
             return;
         }
+        let planes = self.scale * self.scale;
         if serial {
             let p = self.param([0, 0, first as u32, count as u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-            self.cmds.push((Pipe::Serial, p, 1));
+            if planes > 1 {
+                self.cmds.push((Pipe::SerialHr, p, 1, 1));
+            }
+            self.cmds.push((Pipe::Serial, p, 1, 1));
             return;
         }
         // Bin by bounding box into 16x16 tiles, primitive order kept per tile.
@@ -354,7 +429,11 @@ impl GsGpu {
         }
         let n = (self.tiles_v.len() - t0) as u32;
         let p = self.param([0, t0 as u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        self.cmds.push((Pipe::Raster, p, n));
+        // The planes first: they read textures from local memory as it was before the batch.
+        if planes > 1 {
+            self.cmds.push((Pipe::RasterHr, p, n, planes));
+        }
+        self.cmds.push((Pipe::Raster, p, n, 1));
     }
 
     /// A host -> local transfer chunk (`gs::Gs::run_upload`).
@@ -380,7 +459,7 @@ impl GsGpu {
             self.data_v.push(u32::from_le_bytes(b));
         }
         let p = self.param([u.dbp, u.dbw, u.dpsm, bits, u.dsax, u.dsay, u.rrw, u.rrh, u.x, u.y, base, npix, 0, 0, 0, 0]);
-        self.cmds.push((Pipe::Upload, p, npix.div_ceil(256)));
+        self.cmds.push((Pipe::Upload, p, npix.div_ceil(256), 1));
     }
 
     /// A local -> local transfer (`gs::Gs::local_to_local`); `serial` when source and
@@ -393,7 +472,7 @@ impl GsGpu {
         self.reserve(0, 0);
         let p = self.param([src.0, src.1, src.2, dir, dst.0, dst.1, dst.2, serial as u32, spos.0, spos.1, dpos.0, dpos.1, size.0, size.1, 0, 0]);
         let n = if serial { 1 } else { (size.0 * size.1).div_ceil(256) };
-        self.cmds.push((Pipe::Copy, p, n));
+        self.cmds.push((Pipe::Copy, p, n, 1));
     }
 
     /// A CLUT load (TEX0 `t`, TEXCLUT `texclut`): later primitives read the new slot.
@@ -401,7 +480,7 @@ impl GsGpu {
         self.reserve(0, 0);
         let dst = (self.clut_slot + 1) % CLUTS;
         let p = self.param([t as u32, (t >> 32) as u32, texclut as u32, (texclut >> 32) as u32, self.clut_slot, dst, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        self.cmds.push((Pipe::Clut, p, 1));
+        self.cmds.push((Pipe::Clut, p, 1, 1));
         self.clut_slot = dst;
     }
 
@@ -425,10 +504,10 @@ impl GsGpu {
         let mut enc = self.g.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
-            for &(pipe, p, n) in &self.cmds {
+            for &(pipe, p, n, ny) in &self.cmds {
                 pass.set_pipeline(&self.pipes[pipe as usize]);
                 pass.set_bind_group(0, &self.bg, &[p * 256]);
-                pass.dispatch_workgroups(n, 1, 1);
+                pass.dispatch_workgroups(n, ny, 1);
             }
         }
         q.submit([enc.finish()]);
@@ -451,17 +530,37 @@ impl GsGpu {
         const RING: usize = 3;
         if self.ring.is_empty() {
             for _ in 0..RING {
+                let b = self.g.device.create_buffer(&wgpu::BufferDescriptor { label: Some("readout picture"), size: (HR_OUT * 4) as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                self.pic_ring.push((b, Default::default()));
+            }
+            for _ in 0..RING {
                 let b = self.g.device.create_buffer(&wgpu::BufferDescriptor { label: Some("readout"), size: crate::gs::VRAM as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
                 self.ring.push((b, Default::default()));
             }
-            let (tx, rx) = std::sync::mpsc::channel::<(usize, crate::gs::ReadoutJob)>();
+            let (tx, rx) = std::sync::mpsc::channel::<Readout>();
             let ring: Vec<_> = self.ring.iter().map(|(b, f)| (b.clone(), f.clone())).collect();
+            let pic_ring: Vec<_> = self.pic_ring.iter().map(|(b, f)| (b.clone(), f.clone())).collect();
             let device = self.g.device.clone();
             std::thread::Builder::new()
                 .name("gs readout".into())
                 .spawn(move || {
                     let mut mirror = crate::gs::Gs::new();
-                    while let Ok((i, job)) = rx.recv() {
+                    while let Ok(msg) = rx.recv() {
+                        let (i, job) = match msg {
+                            Readout::Mem(i, job) => (i, job),
+                            Readout::Picture(i, job, w, h) => {
+                                let (b, busy) = &pic_ring[i];
+                                let n = (w * h * 4) as u64;
+                                let slice = b.slice(..n);
+                                slice.map_async(wgpu::MapMode::Read, |_| {});
+                                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                                let rgba = slice.get_mapped_range().to_vec();
+                                b.unmap();
+                                busy.store(false, std::sync::atomic::Ordering::Release);
+                                job.publish(rgba, w, h);
+                                continue;
+                            }
+                        };
                         let (b, busy) = &ring[i];
                         let slice = b.slice(..);
                         slice.map_async(wgpu::MapMode::Read, |_| {});
@@ -475,6 +574,51 @@ impl GsGpu {
                 .unwrap();
             self.ring_tx = Some(tx);
         }
+        // Higher render scale: the picture made on the GPU from the planes.
+        if self.scale > 1 {
+            if let Some((w, h, halve, circuits)) = crate::gs::display_layout(&job.regs) {
+                let mut s = self.scale;
+                while s > 1 && (w * s * h * s) as usize > HR_OUT {
+                    s -= 1;
+                }
+                if s == self.scale {
+                    let (ow, oh) = (w * s, h * s);
+                    let i = self.pic_next;
+                    self.pic_next = (i + 1) % self.pic_ring.len();
+                    while self.pic_ring[i].1.load(std::sync::atomic::Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                    self.reserve(0, 0);
+                    let r = &job.regs;
+                    let p = self.param([
+                        r.dispfb[0] as u32,
+                        (r.dispfb[0] >> 32) as u32,
+                        r.dispfb[1] as u32,
+                        (r.dispfb[1] >> 32) as u32,
+                        r.pmode as u32,
+                        r.bgcolor as u32,
+                        circuits | (halve as u32) << 2,
+                        ow,
+                        oh,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]);
+                    self.cmds.push((Pipe::ReadoutHr, p, (ow * oh).div_ceil(256), 1));
+                    self.submit();
+                    let mut enc = self.g.device.create_command_encoder(&Default::default());
+                    enc.copy_buffer_to_buffer(&self.outb, 0, &self.pic_ring[i].0, 0, (ow * oh * 4) as u64);
+                    self.g.queue.submit([enc.finish()]);
+                    self.pic_ring[i].1.store(true, std::sync::atomic::Ordering::Release);
+                    let _ = self.ring_tx.as_ref().unwrap().send(Readout::Picture(i, job, ow, oh));
+                    return;
+                }
+            }
+        }
         let i = self.ring_next;
         self.ring_next = (i + 1) % self.ring.len();
         while self.ring[i].1.load(std::sync::atomic::Ordering::Acquire) {
@@ -485,7 +629,7 @@ impl GsGpu {
         enc.copy_buffer_to_buffer(&self.vram, 0, &self.ring[i].0, 0, crate::gs::VRAM as u64);
         self.g.queue.submit([enc.finish()]);
         self.ring[i].1.store(true, std::sync::atomic::Ordering::Release);
-        let _ = self.ring_tx.as_ref().unwrap().send((i, job));
+        let _ = self.ring_tx.as_ref().unwrap().send(Readout::Mem(i, job));
     }
 
     /// Everything drawn so far into `mem` (blocking).

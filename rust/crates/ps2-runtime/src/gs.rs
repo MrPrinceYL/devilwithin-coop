@@ -1763,30 +1763,41 @@ impl ReadoutJob {
         self.done.fetch_add(1, std::sync::atomic::Ordering::Release);
         crate::diag::tl("GS fielddone");
     }
+
+    /// A picture read out on the GPU (render scale > 1) to the front end.
+    pub fn publish(&self, rgba: Vec<u8>, w: u32, h: u32) {
+        let mut st = self.state.lock().unwrap();
+        publish(&self.regs, &mut st, &self.shared, rgba, w, h);
+        drop(st);
+        self.done.fetch_add(1, std::sync::atomic::Ordering::Release);
+        crate::diag::tl("GS fielddone");
+    }
+}
+
+/// The display: width, height (pixels of the buffer), FRAME-mode halving, enabled circuits
+/// (bit 0 / 1); None with none enabled.
+pub fn display_layout(dr: &DisplayRegs) -> Option<(u32, u32, bool, u32)> {
+    let circuits = (dr.pmode & 3) as u32;
+    if circuits == 0 {
+        return None;
+    }
+    // Display size from the first enabled circuit (DISPLAY: DW, DH, MAGH).
+    let disp = dr.display[if circuits & 1 != 0 { 0 } else { 1 }];
+    let magh = (((disp >> 23) & 0xF) + 1) as u32;
+    let magv = (((disp >> 27) & 3) + 1) as u32;
+    let w = ((((disp >> 32) & 0xFFF) + 1) as u32 / magh).clamp(1, 2048);
+    let h = ((((disp >> 44) & 0x7FF) + 1) as u32 / magv).clamp(1, 2048);
+    // SMODE2: INT (interlace), FFMD (1 = FRAME mode: each field reads every line of a
+    // half-height buffer, shown line-doubled; 0 = FIELD mode: the buffer holds the whole
+    // frame and the fields read alternate lines, shown here progressively).
+    let halve = dr.smode2 & 1 != 0 && dr.smode2 & 2 != 0;
+    Some((w, h, halve, circuits))
 }
 
 /// Read the display circuits out of local memory into the front end's frame.
 pub fn readout(g: &Gs, dr: &DisplayRegs, st: &mut ReadoutState, shared: &FrameShared) {
-        let en1 = dr.pmode & 1 != 0;
-        let en2 = dr.pmode & 2 != 0;
-        let circuits: Vec<usize> = [(en1, 0usize), (en2, 1)].iter().filter(|c| c.0).map(|c| c.1).collect();
-        if circuits.is_empty() {
-            return;
-        }
-        // Display size from the first enabled circuit (DISPLAY: DW, DH, MAGH).
-        let disp = dr.display[circuits[0]];
-        let magh = (((disp >> 23) & 0xF) + 1) as u32;
-        let magv = (((disp >> 27) & 3) + 1) as u32;
-        let mut w = ((((disp >> 32) & 0xFFF) + 1) as u32 / magh).max(1);
-        let mut h = ((((disp >> 44) & 0x7FF) + 1) as u32 / magv).max(1);
-        // SMODE2: INT (interlace), FFMD (1 = FRAME mode: each field reads every line of a
-        // half-height buffer, shown line-doubled; 0 = FIELD mode: the buffer holds the whole
-        // frame and the fields read alternate lines, shown here progressively).
-        let ffmd = dr.smode2 & 2 != 0;
-        let interlaced = dr.smode2 & 1 != 0;
-        let halve = interlaced && ffmd;
-        w = w.min(2048);
-        h = h.min(2048);
+        let Some((w, h, halve, mask)) = display_layout(dr) else { return };
+        let circuits: Vec<usize> = (0..2).filter(|c| mask & (1 << c) != 0).collect();
         let mut out = vec![0u8; (w * h * 4) as usize];
         let bg = dr.bgcolor;
         // Rows are independent and only read local memory: all cores.
@@ -1826,6 +1837,11 @@ pub fn readout(g: &Gs, dr: &DisplayRegs, st: &mut ReadoutState, shared: &FrameSh
                 line[o..o + 4].copy_from_slice(&px);
             }
         });
+        publish(dr, st, shared, out, w, h);
+}
+
+/// Hand a read-out picture to the front end (frame and picture counters).
+fn publish(dr: &DisplayRegs, st: &mut ReadoutState, shared: &FrameShared, out: Vec<u8>, w: u32, h: u32) {
         st.frame_serial += 1;
         shared.frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // New pictures (the content changed): what the player sees move.
@@ -1838,7 +1854,7 @@ pub fn readout(g: &Gs, dr: &DisplayRegs, st: &mut ReadoutState, shared: &FrameSh
             NEW_PICTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             PICTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        let fb = dr.dispfb[circuits[0]];
+        let fb = dr.dispfb[if dr.pmode & 1 != 0 { 0 } else { 1 }];
         if fb != st.last_dispfb {
             st.last_dispfb = fb;
             shared.flips.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

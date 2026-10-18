@@ -6,10 +6,12 @@
 //! output through the default audio device and feeds keyboard / gamepad input into the emulated
 //! controller ports.
 //!
-//! Keys: F1 debug overlay, F2 controls, P settings, F11 / Alt+Enter fullscreen.
+//! Keys: Esc / P options (also OPTIONS in the game's main menu), F2 controls, F1 debug overlay,
+//! F11 / Alt+Enter fullscreen.
 
 mod hid;
 mod input;
+mod options;
 mod settings;
 
 use bevy::asset::RenderAssetUsages;
@@ -42,6 +44,10 @@ struct PendingLink(Option<Arc<FrameShared>>);
 
 #[derive(Component)]
 struct StatusText;
+
+/// The quad showing the console picture (widened for 16:9).
+#[derive(Component)]
+struct ScreenQuad;
 
 /// Devil Within's debug menus (T5_DW_DEBUG), whose own text output the retail build removed.
 #[derive(Component)]
@@ -95,9 +101,25 @@ fn main() {
     app.insert_resource(PendingLink(Some(shared.frames.clone())))
         .insert_resource(input::Input::new(shared.pad.clone()))
         .insert_resource(settings::Settings::load())
-        .init_resource::<settings::MenuState>()
-        .add_systems(Startup, (setup, input::setup_menu, settings::setup, settings::setup_fps))
-        .add_systems(Update, (show_frame, input::read_input, input::menu, settings::menu, fps_counter, update_status, toggle_overlay, fast_forward, update_debug_menu, update_notice))
+        .init_resource::<options::OptState>()
+        .add_systems(Startup, (setup, options::setup, settings::setup, settings::setup_fps))
+        .add_systems(
+            Update,
+            (
+                show_frame,
+                input::read_input,
+                (options::sync, options::keys_and_pad, options::mouse, options::draw).chain(),
+                options::ui_scale,
+                settings::mouse_capture,
+                aspect,
+                fps_counter,
+                update_status,
+                toggle_overlay,
+                fast_forward,
+                update_debug_menu,
+                update_notice,
+            ),
+        )
         .run();
 }
 
@@ -237,7 +259,7 @@ fn setup(
         Tonemapping::None,
         Transform::from_xyz(0.0, 0.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.spawn((Mesh3d(meshes.add(Rectangle::new(4.0, 3.0))), MeshMaterial3d(material.clone()), Transform::IDENTITY));
+    commands.spawn((Mesh3d(meshes.add(Rectangle::new(4.0, 3.0))), MeshMaterial3d(material.clone()), Transform::IDENTITY, ScreenQuad));
     commands.spawn((
         Text::new(""),
         TextFont { font_size: FontSize::Px(14.0), ..default() },
@@ -360,6 +382,25 @@ fn update_status(screen: Option<Res<Screen>>, mut q: Query<(&mut Text, &Visibili
     );
     for (mut t, _) in &mut q {
         t.0 = s.clone();
+    }
+}
+
+/// 4:3 or 16:9: widen the picture's quad and the view it must fit in.
+fn aspect(settings: Res<settings::Settings>, mut quad: Query<&mut Transform, With<ScreenQuad>>, mut cams: Query<&mut Projection, With<Camera3d>>) {
+    let a = settings.aspect();
+    let sx = a * 3.0 / 4.0;
+    for mut t in &mut quad {
+        if (t.scale.x - sx).abs() > 1e-4 {
+            t.scale.x = sx;
+        }
+    }
+    for mut p in &mut cams {
+        if let Projection::Orthographic(o) = &mut *p {
+            let same = matches!(o.scaling_mode, ScalingMode::AutoMin { min_width, .. } if (min_width - 3.0 * a).abs() < 1e-4);
+            if !same {
+                o.scaling_mode = ScalingMode::AutoMin { min_width: 3.0 * a, min_height: 3.0 };
+            }
+        }
     }
 }
 

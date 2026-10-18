@@ -89,6 +89,7 @@ pub fn install() {
     // Overlay, mod menu and the extra stages always; the debug title / developer menu only with
     // T5_DW_DEBUG (`mode`).
     let _ = ps2_runtime::VBLANK_HOOK.set(hook);
+    crate::devil_options::install();
     // The mod menu's thread calls run where Devil Within's main loop (0x100118) calls 0x20F110
     // at the start of every frame.
     ps2_runtime::kernel::THREAD_HOOK.store(0x0020_F110, std::sync::atomic::Ordering::Relaxed);
@@ -340,6 +341,8 @@ fn hook(m: &mut Machine) {
         stage_select(m, &mut prev);
     }
     exit_to_title(m);
+    crate::devil_options::update(m);
+    crate::devil_widescreen::update(m);
 
     let mut text = overlay(m);
     crate::devil_mod::update(m, &mut text);

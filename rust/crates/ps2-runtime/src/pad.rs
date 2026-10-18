@@ -25,6 +25,10 @@ pub const SQUARE: u16 = 1 << 15;
 /// that takes the pad, e.g. the Devil Within mod menu); `PadShared` keeps the real state.
 pub static BLOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Port 1 buttons the game does not see (a mod handling them itself, e.g. Circle as "back" in
+/// its own menu pages).
+pub static MASK: AtomicU16 = AtomicU16::new(0);
+
 pub struct PadShared {
     pub buttons: [AtomicU16; 2],
     pub connected: [AtomicBool; 2],

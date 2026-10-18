@@ -103,8 +103,16 @@ fn gpu_flush(gs: &mut Gs, batch: &Batch) {
     } else {
         batch.items.iter().map(|q| prim_setup(&q.st, q.kind, &q.vs)).collect()
     };
+    let hr = g.scale() > 1;
     for (q, pr) in batch.items.iter().zip(prims) {
-        let Some(pr) = pr else { continue };
+        let Some(mut pr) = pr else { continue };
+        if hr && (3..=5).contains(&pr.kind) {
+            // Sub-pixels of the pixels next to the box may be inside (the edges decide; the
+            // plane origin stays).
+            let st = &q.st;
+            (pr.x0, pr.y0) = ((pr.x0 - 1).max(st.sx0), (pr.y0 - 1).max(st.sy0));
+            (pr.x1, pr.y1) = ((pr.x1 + 1).min(st.sx1 + 1), (pr.y1 + 1).min(st.sy1 + 1));
+        }
         let key = std::sync::Arc::as_ptr(&q.st) as usize;
         let s = g.state(key, q.st.clone(), || gpu_state(&q.st));
         g.push_prim(gpu_prim(&pr, s, q.clut));

@@ -1,5 +1,7 @@
-//! Player settings and the P menu: volume, window mode, gamma, VSync, picture filtering and the
-//! FPS counter.
+//! Player settings: graphics (presets PS2 Classic / Modern / Custom, render scale, widescreen,
+//! filtering, brightness), display (window mode, resolution, VSync, FPS counter, CD loading),
+//! sound (master, music, effects) and the mouse camera. The options screen (`options.rs`) edits
+//! them; `apply` puts them into effect.
 //!
 //! Saved as JSON next to the controls (`%APPDATA%\DevilWithinMod\settings.json`, or the
 //! `T5_SETTINGS` path), so each player keeps their own. Every change applies and saves
@@ -10,14 +12,14 @@
 //! next retrace. VSync only decides whether the window waits for the monitor.
 
 use bevy::prelude::*;
-use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode};
+use bevy::window::{CursorGrabMode, CursorOptions, Monitor, MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
 /// Output volume as f32 bits (read by the audio callback).
 pub static VOLUME: AtomicU32 = AtomicU32::new(0x3F80_0000); // 1.0
-/// The P menu is open (game input is held neutral).
+/// The options screen is open (game input is held neutral).
 pub static MENU_OPEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
@@ -27,29 +29,69 @@ pub enum WindowKind {
     Fullscreen,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub enum Preset {
+    /// As the PlayStation 2 shows it: 640x448, 4:3, sharp pixels.
+    Ps2Classic,
+    /// 1440p-class rendering (3x), 16:9, smooth scaling.
+    Modern,
+    Custom,
+}
+
 #[derive(Serialize, Deserialize, Clone, Resource, Debug)]
 #[serde(default)]
 pub struct Settings {
     pub version: u32,
-    /// 0.0 ..= 1.5
-    pub volume: f32,
-    pub window: WindowKind,
-    /// Display gamma applied to the final image (1.0 = as the console outputs it).
-    pub gamma: f32,
-    pub vsync: bool,
+    pub preset: Preset,
+    /// Render scale 1..=4 (1 = the console's 640x448, bit-exact).
+    pub render_scale: u32,
+    /// 16:9: the game's camera sees wider (devil_widescreen) and the picture fills 16:9.
+    pub widescreen: bool,
     /// Bilinear filtering of the console picture (off = sharp pixels).
     pub smooth: bool,
+    /// Display gamma applied to the final image (1.0 = as the console outputs it).
+    pub gamma: f32,
+    pub window: WindowKind,
+    /// Window size (windowed) or video mode (fullscreen); None = 1280x960 window / the desktop's mode.
+    pub resolution: Option<(u32, u32)>,
+    pub vsync: bool,
     /// FPS counter in the top-right corner.
     pub show_fps: bool,
     /// DVD data reads this many times faster than the console (1 = original, 4, 8); streamed music and
     /// movies always keep the original speed. Off by default so the game stays 1:1.
     pub fast_load: u32,
+    /// 0.0 ..= 1.5
+    pub volume: f32,
+    /// Streamed music (and movie sound) / sound effects, 0.0 ..= 1.5.
+    pub music: f32,
+    pub sfx: f32,
+    /// Mouse camera: the cursor is captured while playing and moving the mouse turns the camera
+    /// (right stick).
+    pub mouse_camera: bool,
+    pub invert_y: bool,
 }
 
 impl Default for Settings {
     /// Default settings.
     fn default() -> Self {
-        Settings { version: 2, volume: 1.0, window: WindowKind::Windowed, gamma: 1.0, vsync: true, smooth: false, show_fps: true, fast_load: 1 }
+        Settings {
+            version: 3,
+            preset: Preset::Ps2Classic,
+            render_scale: 1,
+            widescreen: false,
+            smooth: false,
+            gamma: 1.0,
+            window: WindowKind::Windowed,
+            resolution: None,
+            vsync: true,
+            show_fps: true,
+            fast_load: 1,
+            volume: 1.0,
+            music: 1.0,
+            sfx: 1.0,
+            mouse_camera: false,
+            invert_y: false,
+        }
     }
 }
 
@@ -71,18 +113,44 @@ impl Settings {
         s.sanitized()
     }
     /// Upgrade settings saved by older versions and clamp values into their valid ranges.
-    fn sanitized(mut self) -> Settings {
+    pub fn sanitized(mut self) -> Settings {
         if self.version < 2 {
             // Version 2: the FPS counter is on by default.
-            self.version = 2;
             self.show_fps = true;
         }
+        // Version 3: presets, render scale, widescreen, music / effects volume, mouse camera
+        // (older files get those fields' defaults).
+        self.version = 3;
         self.volume = self.volume.clamp(0.0, 1.5);
+        self.music = self.music.clamp(0.0, 1.5);
+        self.sfx = self.sfx.clamp(0.0, 1.5);
         self.gamma = self.gamma.clamp(0.5, 2.0);
+        self.render_scale = self.render_scale.clamp(1, ps2_runtime::gpu::MAX_SCALE);
         if !matches!(self.fast_load, 1 | 4 | 8) {
             self.fast_load = 1;
         }
+        self.preset = self.matching_preset();
         self
+    }
+    /// The preset whose picture settings these are (Custom if none).
+    pub fn matching_preset(&self) -> Preset {
+        for p in [Preset::Ps2Classic, Preset::Modern] {
+            let mut t = self.clone();
+            t.set_preset(p);
+            if (t.render_scale, t.widescreen, t.smooth, t.gamma) == (self.render_scale, self.widescreen, self.smooth, self.gamma) {
+                return p;
+            }
+        }
+        Preset::Custom
+    }
+    /// Take a preset's picture settings (Custom keeps the current ones).
+    pub fn set_preset(&mut self, p: Preset) {
+        self.preset = p;
+        match p {
+            Preset::Ps2Classic => (self.render_scale, self.widescreen, self.smooth, self.gamma) = (1, false, false, 1.0),
+            Preset::Modern => (self.render_scale, self.widescreen, self.smooth, self.gamma) = (3, true, true, 1.0),
+            Preset::Custom => {}
+        }
     }
     /// Write settings.json.
     pub fn save(&self) {
@@ -94,149 +162,77 @@ impl Settings {
             let _ = std::fs::write(p, t);
         }
     }
-    /// Bevy window mode for the fullscreen setting.
-    fn window_mode(&self) -> WindowMode {
-        match self.window {
-            WindowKind::Windowed => WindowMode::Windowed,
-            WindowKind::Borderless => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
-            WindowKind::Fullscreen => WindowMode::Fullscreen(MonitorSelection::Current, VideoModeSelection::Current),
-        }
-    }
     /// Bevy present mode for the VSync setting.
     fn present_mode(&self) -> PresentMode {
         if self.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync }
     }
+    /// The picture's aspect ratio (width / height).
+    pub fn aspect(&self) -> f32 {
+        if self.widescreen { 16.0 / 9.0 } else { 4.0 / 3.0 }
+    }
 }
 
-#[derive(Component)]
-pub struct SettingsText;
-
-#[derive(Resource, Default)]
-pub struct MenuState {
-    open: bool,
-    selected: usize,
+/// Put the settings into effect: the emulator's volumes, render scale, loading speed and
+/// widescreen, and the window (mode, size / video mode, VSync).
+pub fn apply(s: &Settings, w: &mut Window, monitors: &[&Monitor]) {
+    VOLUME.store(s.volume.to_bits(), Relaxed);
+    ps2_runtime::spu2::MUSIC_VOLUME.store(s.music.to_bits(), Relaxed);
+    ps2_runtime::spu2::SFX_VOLUME.store(s.sfx.to_bits(), Relaxed);
+    ps2_runtime::gpu::RENDER_SCALE.store(s.render_scale, Relaxed);
+    ps2_runtime::iop::fileio::FAST_LOAD.store(s.fast_load, Relaxed);
+    t5_recomp::devil_widescreen::ENABLED.store(s.widescreen, Relaxed);
+    let mode = match s.window {
+        WindowKind::Windowed => WindowMode::Windowed,
+        WindowKind::Borderless => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+        WindowKind::Fullscreen => {
+            // The monitor's mode of that size with the highest refresh rate.
+            let pick = s.resolution.and_then(|(rw, rh)| {
+                monitors
+                    .iter()
+                    .flat_map(|m| m.video_modes.iter())
+                    .filter(|v| v.physical_size == UVec2::new(rw, rh))
+                    .max_by_key(|v| (v.refresh_rate_millihertz, v.bit_depth))
+                    .cloned()
+            });
+            WindowMode::Fullscreen(MonitorSelection::Current, pick.map_or(VideoModeSelection::Current, VideoModeSelection::Specific))
+        }
+    };
+    if w.mode != mode {
+        w.mode = mode;
+    }
+    if s.window == WindowKind::Windowed {
+        let (rw, rh) = s.resolution.unwrap_or((1280, 960));
+        if (w.resolution.width() as u32, w.resolution.height() as u32) != (rw, rh) {
+            w.resolution.set(rw as f32, rh as f32);
+        }
+    }
+    let pm = s.present_mode();
+    if w.present_mode != pm {
+        w.present_mode = pm;
+    }
 }
 
-const ITEMS: usize = 8;
-
-/// Apply the saved settings to the window at startup and build the (hidden) P settings menu.
-pub fn setup(mut commands: Commands, settings: Res<Settings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: FontSize::Px(18.0), ..default() },
-        TextColor(Color::WHITE),
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Percent(30.0),
-            left: Val::Percent(30.0),
-            padding: UiRect::all(Val::Px(16.0)),
-            ..default()
-        },
-        Visibility::Hidden,
-        SettingsText,
-    ));
-    VOLUME.store(settings.volume.to_bits(), Relaxed);
-    ps2_runtime::iop::fileio::FAST_LOAD.store(settings.fast_load, Relaxed);
+/// Apply the saved settings at startup.
+pub fn setup(settings: Res<Settings>, mut windows: Query<&mut Window, With<PrimaryWindow>>, monitors: Query<&Monitor>) {
+    let m: Vec<&Monitor> = monitors.iter().collect();
     if let Ok(mut w) = windows.single_mut() {
-        w.mode = settings.window_mode();
-        w.present_mode = settings.present_mode();
+        apply(&settings, &mut w, &m);
     }
 }
 
-/// P: open/close (Esc also closes). Up/Down select, Left/Right change, Enter on "Reset" restores
-/// the defaults. F11 / Alt+Enter toggle borderless fullscreen at any time.
-pub fn menu(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut settings: ResMut<Settings>,
-    mut state: ResMut<MenuState>,
-    mut text: Query<(&mut Text, &mut Visibility), With<SettingsText>>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-) {
-    let mut changed = false;
-    let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
-    if keys.just_pressed(KeyCode::F11) || (alt && keys.just_pressed(KeyCode::Enter)) {
-        settings.window = if settings.window == WindowKind::Windowed { WindowKind::Borderless } else { WindowKind::Windowed };
-        changed = true;
+/// Capture the cursor for the mouse camera while playing (options and the mod menu closed, the
+/// window focused); free it otherwise.
+pub fn mouse_capture(settings: Res<Settings>, mut windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>) {
+    let Ok((w, mut c)) = windows.single_mut() else { return };
+    let mod_menu = t5_recomp::devil_debug::MENU_TEXT.lock().map(|t| !t.is_empty()).unwrap_or(false);
+    let in_menu = t5_recomp::devil_options::IN_MENU.load(Relaxed);
+    let grab = settings.mouse_camera && w.focused && !MENU_OPEN.load(Relaxed) && !mod_menu && !in_menu;
+    let (mode, visible) = if grab { (CursorGrabMode::Locked, false) } else { (CursorGrabMode::None, true) };
+    if c.grab_mode != mode {
+        c.grab_mode = mode;
     }
-    if keys.just_pressed(KeyCode::KeyP) || (state.open && keys.just_pressed(KeyCode::Escape)) {
-        state.open = !state.open;
-    }
-    MENU_OPEN.store(state.open, Relaxed);
-    if let Ok((mut t, mut vis)) = text.single_mut() {
-        *vis = if state.open { Visibility::Visible } else { Visibility::Hidden };
-        if state.open {
-            if keys.just_pressed(KeyCode::ArrowDown) {
-                state.selected = (state.selected + 1) % ITEMS;
-            }
-            if keys.just_pressed(KeyCode::ArrowUp) {
-                state.selected = (state.selected + ITEMS - 1) % ITEMS;
-            }
-            let dir = keys.just_pressed(KeyCode::ArrowRight) as i32 - keys.just_pressed(KeyCode::ArrowLeft) as i32;
-            let enter = keys.just_pressed(KeyCode::Enter) && !alt;
-            if dir != 0 || (state.selected == ITEMS - 1 && enter) {
-                let s = &mut *settings;
-                match state.selected {
-                    0 => s.volume = ((s.volume + 0.05 * dir as f32) * 20.0).round() / 20.0,
-                    1 => {
-                        let order = [WindowKind::Windowed, WindowKind::Borderless, WindowKind::Fullscreen];
-                        let i = order.iter().position(|k| *k == s.window).unwrap_or(0) as i32;
-                        s.window = order[(i + dir).rem_euclid(3) as usize];
-                    }
-                    2 => s.gamma = ((s.gamma + 0.05 * dir as f32) * 20.0).round() / 20.0,
-                    3 => s.vsync = !s.vsync,
-                    4 => s.smooth = !s.smooth,
-                    5 => s.show_fps = !s.show_fps,
-                    6 => {
-                        let order = [1u32, 4, 8];
-                        let i = order.iter().position(|f| *f == s.fast_load).unwrap_or(0) as i32;
-                        s.fast_load = order[(i + dir).rem_euclid(3) as usize];
-                    }
-                    _ => *s = Settings::default(),
-                }
-                *s = s.clone().sanitized();
-                changed = true;
-            }
-            let rows = [
-                format!("Volume        < {:>3.0}% >", settings.volume * 100.0),
-                format!("Window        < {:?} >", settings.window),
-                format!("Gamma         < {:.2} >", settings.gamma),
-                format!("VSync         < {} >", if settings.vsync { "On" } else { "Off" }),
-                format!("Filtering     < {} >", if settings.smooth { "Smooth" } else { "Sharp pixels" }),
-                format!("FPS counter   < {} >", if settings.show_fps { "On" } else { "Off" }),
-                format!(
-                    "CD loading    < {} >",
-                    match settings.fast_load {
-                        4 => "Fast (4x)",
-                        8 => "Very fast (8x)",
-                        _ => "Original",
-                    }
-                ),
-                "Reset to defaults  [Enter]".to_string(),
-            ];
-            let mut s = String::from("SETTINGS\nUp/Down select | Left/Right change | P / Esc close\n\n");
-            for (i, r) in rows.iter().enumerate() {
-                s += if i == state.selected { "> " } else { "  " };
-                s += r;
-                s += "\n";
-            }
-            t.0 = s;
-        }
-    }
-    if changed {
-        settings.save();
-        VOLUME.store(settings.volume.to_bits(), Relaxed);
-    ps2_runtime::iop::fileio::FAST_LOAD.store(settings.fast_load, Relaxed);
-        if let Ok(mut w) = windows.single_mut() {
-            let mode = settings.window_mode();
-            if w.mode != mode {
-                w.mode = mode;
-            }
-            let pm = settings.present_mode();
-            if w.present_mode != pm {
-                w.present_mode = pm;
-            }
-        }
+    if c.visible != visible {
+        c.visible = visible;
     }
 }
 
