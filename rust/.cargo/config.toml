@@ -1,0 +1,10 @@
+# Build for the CPU the game runs on (AVX2 / SSE4.1 / FMA where present): single-instruction
+# floor / round, wider vectorisation in the rasteriser and the translated code. Rust never fuses
+# multiply-add on its own, so the float results stay the same.
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+# Windows: link with LLVM's lld (ships with rustup) instead of MSVC link.exe - much faster for
+# the large binaries (t5-headless ~270 MB, t5-bevy ~890 MB). Linux uses lld by default already.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
