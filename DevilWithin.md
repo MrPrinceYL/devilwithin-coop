@@ -1,7 +1,9 @@
 # Devil Within: Debug-Menüs, Testinhalte, versteckte Daten
 
-Untersuchung des Programms `devil` (TK5DATA3-Eintrag 4, `extracted/elf/devil.elf`), Stand
-17.10.2026, Branch `devil/debug`. Adressen = EE-Adressen im Programm. Quellen: `sheets/strings.csv`,
+Projekt **DevilWithinMod** (abgespalten aus Tekken5Decomp am 18.10.2026, Branch `devil/debug`):
+Devil Within startet direkt (TK5DATA3-Eintrag 4, `kernel::BOOT_PACKED`, siehe README), ohne Tekken 5,
+StarBlade und Arcade History; Mod-Menü und Overlay sind immer aktiv, die Entwicklermenüs über
+`T5_DW_DEBUG`. Untersuchung des Programms `devil` (`extracted/elf/devil.elf`), ab 17.10.2026. Adressen = EE-Adressen im Programm. Quellen: `sheets/strings.csv`,
 `src/raw_c/devil/*.c`, Datentabellen direkt aus der ELF gelesen.
 
 Build-Stempel im Programm: `Feb  6 2005` `16:12:50` (0x400918 / 0x400908). Entwicklerpfad:
@@ -68,7 +70,7 @@ PAUSE_TEST, EVENT_SAMPLE_MODE, TEST_HERO, EVENT_STREAM_TEST, TEG_SAVE_TEST, map_
 Debug-Anzeigen „EffectObj Debug Disp“, „Test Object Disp“, „MapTable Debug“, „SHUJI TEST“,
 „MAKINO TEST“, Ereignistyp EV_TYPE_DEBUGWORK, MT_EVENT_IMPACT_DEBUG.
 
-## 2. Einschalten: `T5_DW_DEBUG` (abschaltbar, Standard aus)
+## 2. Einschalten: `T5_DW_DEBUG` (Debug-Titel / Entwicklermenü; Standard aus)
 
 `rust/crates/t5-recomp/src/devil_debug.rs`, über `ps2_runtime::VBLANK_HOOK`. Ohne Variable ändert
 sich nichts (1:1). Mit Variable wird nur ein Datenwert gesetzt, so wie es die Debug-Pfade des
@@ -110,8 +112,8 @@ die Menülogik nicht:
 Menüs aus dem Gast-RAM (Task-Pool 0x2A9A30, Kette über +0x18): Entwicklermenü (Funktion
 0x103038, Zustand 1, Tabelle +0x38 bis 0x20CF90, Cursor +0x40) und jedes SUBMENU (Funktion
 0x1324B8 = Update aus dem Init-Callback 0x1325D8, Zustand 0, Tabelle +0x38 bis Funktion 0,
-Titel +0x3C, Cursor +0x40). t5-bevy zeigt den Text oben links (`DebugMenuText`), nur mit
-`T5_DW_DEBUG`. Ersetzt die entfernte Ausgabe, ändert keinen Spielzustand. Nutzertest offen.
+Titel +0x3C, Cursor +0x40). t5-bevy zeigt den Text oben links (`DebugMenuText`), immer aktiv.
+Ersetzt die entfernte Ausgabe, ändert keinen Spielzustand.
 
 **Steuerung (aus dem Eingabecode, Pad-Wörter ab 0x2A98E0, libpad-Bits):** hoch 0x10 / runter
 0x40 (Steuerkreuz), **Entwicklermenü wählt nur mit KREIS (0x2000)**, SUBMENU mit KREIS oder
@@ -162,12 +164,12 @@ Werkzeuge haben keinen Zurück-Weg im Code; das Entwicklermenü wartet, bis die 
 **Overlay** (`devil_debug::overlay`, Texte auf Englisch, Nutzerwunsch 18.10.): zeigt jedes offene Menü (Einträge, Cursor, `[removed]`,
 `[hangs]`) und jeden laufenden Modus aus der Tabelle mit aktuellen Werten und Tasten.
 
-**Reparatur (nur mit `T5_DW_DEBUG`):** Nach dem Ende eines Modus zeigt sich das Entwicklermenü
+**Reparatur (immer aktiv):** Nach dem Ende eines Modus zeigt sich das Entwicklermenü
 mit Eintragsanzahl 0 (0x102FD8 löscht +0x3C, gezählt wird nur in Zustand 0, den der ungenutzte
 Wiedereinstieg 0x1034A0 auslösen würde) → nächstes hoch/runter = Endlosschleife 0x1031E8
 (Nutzerbericht: Hänger nach CHARA VIEW). Der Hook setzt dann Zustand 0 (neu zählen), wie 0x1034A0.
 
-## 2b. Mod-Menü (nur Branch `devil/debug`, nur mit `T5_DW_DEBUG`, nicht 1:1)
+## 2b. Mod-Menü (immer aktiv, nicht 1:1)
 
 `t5-recomp/src/devil_mod.rs`. Öffnen/Schließen: **L3 + R3** (Tastatur F + G). Solange das Menü
 offen ist, bekommt das Spiel keine Eingabe (`ps2_runtime::pad::BLOCK`: Port 1 liest „nichts
@@ -200,7 +202,7 @@ Auswahl, KREIS ausführen.
 - **Position probe:** zeigt Kandidaten der Position (Matrix +0x30, Yaw, obj+0x16C) – Grundlage für
   Teleport/No-Clip.
 
-**Stand 18.10. (headless geprüft, `run/dwmod.sh`, `T5_DW_MENULOG=1` schreibt das Overlay ins Log):**
+**Stand 18.10. (headless geprüft, `run/dwmod.sh` (DevilWithinMod), `T5_DW_MENULOG=1` schreibt das Overlay ins Log):**
 
 | Eintrag | Stand | Beleg |
 |---|---|---|
@@ -438,7 +440,7 @@ hatte in TK5DATA0/1/5 gesucht.) Entpacken: `tools/dw_extract.py <iso> <extracted
 
 **Paketformat BDPK** (Prüfung 0x109F80, Einträge 0x10A5A8): Kopf 0x80 Byte (+4 Anzahl), dann je
 0x80 Byte {`BD`, Typ u16, u32, Größe, ?, Offset, Name[0x6C]} – Namen ohne `.dat`. Inventar aller
-Pakete: 1022 Einträge (`extracted/dw_pak_inventory.txt`, nicht in Git).
+Pakete: 1022 Einträge (Analyse-Liste, nicht aufbewahrt; aus `extracted/tk5data2` jederzeit neu erzeugbar).
 
 **Verlangt, aber auf der Disc nicht vorhanden** (Listen `.txt` gegen Paketinventar; die `nut_`-
 Dateien ausgenommen, die nicht einzeln verpackt sind):
@@ -515,8 +517,8 @@ dazu Einträge FORCE MENU, PAUSE MENU, STAGE RESULT, TOTAL RESULT, MAIN MENU. Di
 (0x1CBF70) räumt nur auf; der eigentliche Antrieb der Baumansicht (Eingabe/Zeichnen 0x1D8260,
 0x1D88B0) wird von nichts mehr aufgerufen (nur `.eh_frame`-Treffer) → MATTY TEST zeigt nichts.
 
-**Cheat-Menü im Spiel (18.10., `T5_DW_DEBUG`):** SELECT halten + L1 öffnet/schließt, SELECT + hoch/
-runter wählt, SELECT + KREIS führt aus. Einträge = die Knoten des matty-Baums (Namen aus dem
+**Cheat-Menü im Spiel (18.10., heute Teil des Mod-Menüs, L3 + R3):** hoch/runter wählt, KREIS
+führt aus. Einträge = die Knoten des matty-Baums (Namen aus dem
 Programm). Ausführbar sind die Funktionen ohne Parameter: **Restore 30% health** (0x1D92B0),
 **Set COLLECT flags** (0x1D9A78: Flags 0x200–0x227 = 1, alle Sammelobjekte als gefunden – wird mit
 dem Spielstand gespeichert!) und **Clear COLLECT flags** (0x1D9AF0). Nicht verfügbar: Gold Passport
@@ -567,7 +569,7 @@ INSTRUC, ENDING, CREDITS; Paket `common/demo` bzw. `common/inst`). Hintergrund i
 `nut_hy_makuma` (640×480, Mishima-Wappen), Schrift `nut_menu_font_4`; der Text steht als
 eigene Kodierung in **`cap_teg_msg_font_account`** (`base.pak`, Typ 5, Format „CAP“):
 `tools/dw_cap_text.py <paket> <eintrag>` bzw. Bilder `tools/tim2png.py`.
-- **Format:** „CAP “, +4 Glyphenzahl (0x86), +0x18 Index, +0x1C Textbereich; Glyphen 16 Byte
+- **Format:** „CAP\0“, +4 Glyphenzahl (0x86), +0x18 Index, +0x1C Textbereich; Glyphen 16 Byte
   (+0xE Zeichencode); Text in 16-Bit-Codes: Kleinbuchstaben Code + 0xC1, andere Zeichen
   Code + 0xE1, 3 = Leerzeichen, 2 = Zeilenende, 1 = Umbruch in Hilfetexten, 0 = Pause der
   Schreibmaschinen-Anzeige. Index 8 Byte {Offset in 16-Bit-Einheiten, 0, Nummer, 100}; jede
@@ -589,8 +591,8 @@ eigene Kodierung in **`cap_teg_msg_font_account`** (`base.pak`, Typ 5, Format �
   Belohnungsmeldungen 366–406: 20 Figuren × 2 + StarBlade). Die Meldungen wurden offenbar einmal
   neu nummeriert; der alte Block ist nicht mehr in der Datei.
 - `cap_teg_msg_font_arcade` enthält nur einen Platzhalter („a“).
-- **Alles gesammelt:** `python tools/dw_dev_texts.py ../Tekken5/extracted/tk5data2 ../Tekken5/devTextEtc`
-  schreibt nach `Decomps/Tekken5/devTextEtc/` (Spieldaten, nicht in Git): `story.txt` (Seiten wie im
+- **Alles gesammelt:** `python tools/dw_dev_texts.py ../DevilWithin/extracted/tk5data2 ../DevilWithin/devTextEtc`
+  schreibt nach `Decomps/DevilWithin/devTextEtc/` (Spieldaten, nicht in Git): `story.txt` (Seiten wie im
   Spiel), `messages_all.txt`, `menutext.txt`, Warplisten neu/alt, Sound-Konfiguration neu/alt,
   `chr_000` neu/alt, Bilder (Zwischenspiel-Hintergrund, Anleitung, Schrift), `README.md`.
 

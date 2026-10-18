@@ -5,7 +5,7 @@ The program carries the directory itself: 0x146 entries of 16 bytes at 0x362900 
 0x20EEA8). Writes every file to extracted/tk5data2/<path> and the list to
 sheets/dw_files.csv (path, offset, size).
 
-    python tools/dw_extract.py "E:/Decompilation/Game/Tekken 5 (USA).iso" E:/Decompilation/Decomps/Tekken5/extracted
+    python tools/dw_extract.py "E:/Decompilation/Game/Tekken 5 (USA).iso" E:/Decompilation/Decomps/DevilWithin/extracted
 """
 import csv
 import os

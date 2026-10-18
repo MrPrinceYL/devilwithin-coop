@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch the recompiled Tekken 5 on Linux (builds first if needed; the first build takes a while).
+# Launch the Devil Within Mod on Linux (starts Devil Within directly; builds first if needed, the
+# first build takes a while). T5_DW_DEBUG=title / dev opens the debug title / developer menu.
 # The disc image defaults to ../../Game/Tekken 5 (USA).iso; set T5_DISC to use another one.
 # Memory cards are folders: memcard/port0 and memcard/port1 next to this file.
 set -e

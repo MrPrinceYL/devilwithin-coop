@@ -1,6 +1,6 @@
 """Critical path per game logic frame from a `T5_TIMELINE=1` run log.
 
-    python tools/timeline.py ../Tekken5/run/tl.log [seconds-from-end]
+    python tools/timeline.py run/tl.log [seconds-from-end]
 
 Events (diag::tl): "EE logic" (game frame counter 0x151F90 changed), "EE idle" / "EE wake"
 (guest thread parked / resumed), "EE vblank", "EE dma vif1|gif", "W busy" / "W idle" (MTVU

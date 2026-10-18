@@ -1,4 +1,4 @@
-//! Bevy host for the recompiled Tekken 5 (SLUS-21059).
+//! Bevy host for the Devil Within Mod (Devil Within from Tekken 5, SLUS-21059, recompiled).
 //!
 //! The recompiled game runs on its own thread against the emulated PlayStation 2 (ps2-runtime).
 //! Every vertical blank the GS's display output is published as an RGBA frame; this app uploads
@@ -78,7 +78,7 @@ fn main() {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::BLACK)).add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "Tekken 5 (Tekken5Decomp)".into(),
+            title: "Devil Within Mod".into(),
             resolution: (1280, 960).into(),
             ..default()
         }),
@@ -282,9 +282,9 @@ fn fps_counter(
     // New pictures, not fields: Tekken 5 shows an unchanged frame again each field.
     // Real game frames (copy passes from a newly drawn frame), not displayed pictures: the game
     // re-copies its frame every field with an interlace shift.
-    // The game's own logic frame counter: displayed pictures and copy passes repeat every
-    // field and would always read 60.
-    let logic = ps2_runtime::machine_opt().map(|m| ps2_runtime::logic_frames(m) as u64).unwrap_or(0);
+    // No logic counter: ps2_runtime::logic_frames reads Tekken 5's (0x151F90), which is code in
+    // Devil Within.
+    let logic = 0;
     let rendered = ps2_runtime::raster::RENDERED_TOTAL.load(Relaxed);
     settings::update_fps(rendered, logic, screen.frames.flips(), &settings, &mut w, &mut q);
 }
@@ -296,7 +296,7 @@ fn update_status(screen: Option<Res<Screen>>, mut q: Query<(&mut Text, &Visibili
     let Some(screen) = screen else { return };
     let last = LAST_FN.load(Relaxed);
     let s = format!(
-        "Tekken 5 recomp | frames {} ({}x{})\nfunctions entered {} | indirect calls {} (unresolved {})\nlast function {:#010x}\nvblanks {}\n",
+        "Devil Within Mod | frames {} ({}x{})\nfunctions entered {} | indirect calls {} (unresolved {})\nlast function {:#010x}\nvblanks {}\n",
         screen.frames.count(),
         screen.size.0,
         screen.size.1,

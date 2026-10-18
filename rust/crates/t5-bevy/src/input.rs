@@ -2,7 +2,7 @@
 //! and 2.
 //!
 //! Bindings live in a per-user JSON file (`controls.json` in the platform config folder,
-//! e.g. `%APPDATA%\Tekken5Decomp\controls.json`), so everyone who plays a shared copy keeps their
+//! e.g. `%APPDATA%\DevilWithinMod\controls.json`), so everyone who plays a shared copy keeps their
 //! own. On first run the file is created from the defaults. F2 opens the in-game rebinding screen.
 //!
 //! A binding is a list of sources per pad button. Sources are strings:
@@ -107,7 +107,7 @@ pub fn config_path() -> PathBuf {
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Tekken5Decomp").join("controls.json")
+    base.join("DevilWithinMod").join("controls.json")
 }
 
 impl Controls {

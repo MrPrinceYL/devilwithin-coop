@@ -24,15 +24,9 @@ import struct
 import sys
 
 # (variant, source, title). Sources: 'main', a disc file name or a TK5DATA3 entry index.
+# DevilWithinMod: only Devil Within (Tekken5Decomp builds every program on the disc).
 VARIANTS = [
-    ('main', 'main', 'Tekken 5 (SLUS_210.59 + TK5DATA3 entries 5 and 6)'),
-    ('tekken1', 0, 'Arcade History: Tekken (System 11 port)'),
-    ('tekken2', 1, 'Arcade History: Tekken 2'),
-    ('tekken3', 2, 'Arcade History: Tekken 3'),
-    ('starblade', 3, 'StarBlade'),
     ('devil', 4, 'Devil Within'),
-    ('loader', 'TK5DATA4.BIN', 'Program loader (TK5DATA4.BIN)'),
-    ('lzstub', 'lzstub', 'Loader unpack routine (decrypted to 0x01E73800)'),
 ]
 
 # The loader (TK5DATA4 0x01E00658) XORs 46 words at 0x01E1C740 with 0xFF0FFF0F, copies them to

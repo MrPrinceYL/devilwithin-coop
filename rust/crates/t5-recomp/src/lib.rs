@@ -19,6 +19,9 @@ pub fn boot() -> ps2_runtime::Shared {
     ps2_runtime::diag::init("t5_trace.log");
     // The VU micro code translated from sheets/vu_microcode.csv.
     t5_vu::register();
+    // Straight into Devil Within: TK5DATA3 entry 4 instead of Tekken 5 (SLUS_210.59); its "return
+    // to mode select" (LoadExecPS2 of SLUS_210.59) starts it again.
+    let _ = ps2_runtime::kernel::BOOT_PACKED.set(("TK5DATA3.BIN", 4));
     devil_debug::install();
     ps2_runtime::create(&disc_path(), PROGRAMS, IOP_MODULES)
 }

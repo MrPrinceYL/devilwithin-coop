@@ -6,16 +6,16 @@
 # Usage: bash run_ghidra.sh [variant ...]   (default: every variant)
 #        IOP=1 bash run_ghidra.sh [module ...] (the IOP modules of extracted/iop_modules.csv,
 #        exported to export_iop/<module>)
-# Env:   T5_WORK   work folder (default ../../Tekken5: extracted/, ghidra/, export/)
+# Env:   T5_WORK   work folder (default ../../DevilWithin: extracted/, ghidra/, export/)
 #        GHIDRA    ghidra-cli executable
 #
 # Resumable: markers in ghidra/ (<prog>.imported, .analyzed, .delayfix, .ptrcode). Delete
 # <prog>.analyzed to re-analyze one variant. Fails loudly if an export is empty.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
-WORK="${T5_WORK:-$(cd "$HERE/../.." && pwd -W 2>/dev/null || pwd)/Tekken5}"
+WORK="${T5_WORK:-$(cd "$HERE/../.." && pwd -W 2>/dev/null || pwd)/DevilWithin}"
 GHIDRA="${GHIDRA:-ghidra}"
-PROJ=TEKKEN5
+PROJ=DEVILWITHIN
 export GHIDRA_CLI_READ_TIMEOUT=0
 mkdir -p "$WORK/ghidra" "$WORK/export"
 

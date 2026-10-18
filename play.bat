@@ -1,5 +1,6 @@
 @echo off
-rem Launch the recompiled Tekken 5 (builds first if needed; the first build takes a while).
+rem Launch the Devil Within Mod (starts Devil Within directly; builds first if needed, the first
+rem build takes a while). T5_DW_DEBUG=title / dev opens the debug title / developer menu.
 rem The disc image defaults to E:\Decompilation\Game\Tekken 5 (USA).iso; set T5_DISC to use
 rem another one. Memory cards are folders: memcard\port0 and memcard\port1 next to this file.
 rem (No parenthesized blocks below: the ")" in "(USA)" would end them early.)

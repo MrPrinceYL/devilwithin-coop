@@ -66,12 +66,12 @@ fn mode() -> Option<Mode> {
 
 /// Install the hook when T5_DW_DEBUG asks for it.
 pub fn install() {
-    if mode().is_some() {
-        let _ = ps2_runtime::VBLANK_HOOK.set(hook);
-        // The mod menu's thread calls run where Devil Within's main loop (0x100118) calls
-        // 0x20F110 at the start of every frame.
-        ps2_runtime::kernel::THREAD_HOOK.store(0x0020_F110, std::sync::atomic::Ordering::Relaxed);
-    }
+    // Overlay, mod menu and the extra stages always; the debug title / developer menu only with
+    // T5_DW_DEBUG (`mode`).
+    let _ = ps2_runtime::VBLANK_HOOK.set(hook);
+    // The mod menu's thread calls run where Devil Within's main loop (0x100118) calls 0x20F110
+    // at the start of every frame.
+    ps2_runtime::kernel::THREAD_HOOK.store(0x0020_F110, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The stage names the stage select starts from (0x10D680: stage i -> the warp list entry

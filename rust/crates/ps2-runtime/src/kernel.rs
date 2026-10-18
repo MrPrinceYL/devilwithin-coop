@@ -535,11 +535,80 @@ fn do_exec(m: &mut Machine, e: Exec) {
     diag::log(format!("exec: entry {entry:#010x} gp {gp:#010x} args {:?}", k.args));
 }
 
+/// Boot a program packed in an archive on the disc instead of SYSTEM.CNF's BOOT2: (archive,
+/// entry). Every later LoadExecPS2 of BOOT2 (a program going back to the menu it came from)
+/// starts it again. Archive layout (TK5DATA3.BIN): u32 count, count x {u32 offset, u32 size},
+/// entries packed with `lz_unpack`.
+pub static BOOT_PACKED: std::sync::OnceLock<(&'static str, usize)> = std::sync::OnceLock::new();
+
+/// A disc path without device, leading separator and version, upper case.
+fn disc_name(path: &str) -> String {
+    let p = path.trim_start_matches("cdrom0:").trim_start_matches("cdrom:");
+    p.trim_start_matches(['\\', '/']).split(';').next().unwrap_or("").replace('/', "\\").to_uppercase()
+}
+
+/// The boot loader's LZ scheme (SLUS 0x00D06010, tools/tk5data.py): flag bytes, bits LSB-first
+/// above a sentinel bit (0 ends the stream, 1 an empty group); bit 1 = literal byte, 0 = big-endian
+/// u16 back-reference, 11-bit distance (0 = 0x800), 5-bit length (0 = 32).
+fn lz_unpack(src: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    let mut flag = *src.first()?;
+    while flag != 0 {
+        pos += 1;
+        while flag > 1 {
+            if flag & 1 != 0 {
+                out.push(*src.get(pos)?);
+                pos += 1;
+            } else {
+                let v = (*src.get(pos)? as usize) << 8 | *src.get(pos + 1)? as usize;
+                pos += 2;
+                let dist = match v & 0x7FF {
+                    0 => 0x800,
+                    d => d,
+                };
+                let len = match v >> 11 {
+                    0 => 0x20,
+                    l => l,
+                };
+                let start = out.len().checked_sub(dist)?;
+                for i in 0..len {
+                    out.push(out[start + i]);
+                }
+            }
+            flag >>= 1;
+        }
+        flag = *src.get(pos)?;
+    }
+    Some(out)
+}
+
+/// The bytes of the program `path` names: BOOT2 replaced by BOOT_PACKED, else the disc file.
+fn program_image(m: &mut Machine, path: &str) -> Option<Vec<u8>> {
+    let boot = boot_path(m);
+    let d = m.disc.as_mut()?;
+    if let (Some(&(archive, entry)), true) = (BOOT_PACKED.get(), disc_name(path) == disc_name(&boot)) {
+        let (lba, _) = d.find(archive)?;
+        let head = d.read_bytes(lba as u64, 0x800).ok()?;
+        let rd = |o: usize| u32::from_le_bytes(head[o..o + 4].try_into().unwrap());
+        if entry as u32 >= rd(0) {
+            return None;
+        }
+        let (off, size) = (rd(4 + 8 * entry), rd(8 + 8 * entry));
+        let mut packed = vec![0u8; size as usize];
+        d.read_into(lba as u64 * 2048 + off as u64, &mut packed).ok()?;
+        let data = lz_unpack(&packed)?;
+        diag::log(format!("{path} -> {archive} entry {entry} ({size} -> {} bytes)", data.len()));
+        return Some(data);
+    }
+    let (lba, size) = d.find(path)?;
+    d.read_bytes(lba as u64, size as usize).ok()
+}
+
 /// Load an ELF from the disc into RAM (the file part of each PT_LOAD segment).
 fn load_elf(m: &mut Machine, path: &str) -> Option<(u32, u32)> {
-    let d = m.disc.as_mut()?;
-    let (lba, size) = d.find(path)?;
-    let data = d.read_bytes(lba as u64, size as usize).ok()?;
+    let data = program_image(m, path)?;
+    let size = data.len();
     if &data[..4] != b"\x7fELF" {
         return None;
     }

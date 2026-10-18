@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ELF_DIR = Path(r"E:\Decompilation\Decomps\Tekken5\extracted\elf")
+ELF_DIR = Path(r"E:\Decompilation\Decomps\DevilWithin\extracted\elf")
 DB = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
     r"E:\Decompilation\Decomps\_references\PS2Recomp\ps2xAnalyzer\include\ps2recomp\sce_symbol_database_data.h")
 

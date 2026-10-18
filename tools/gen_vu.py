@@ -11,7 +11,7 @@ T5_VUDUMP=1 writes every distinct micro memory image it runs to run/vu_dumps/. T
                   function (ps2_runtime::vu::pair_const::<LOWER, UPPER>, whose decoding the
                   compiler folds away), in a table the runtime looks pairs up in.
 
-    python tools/gen_vu.py --collect ../Tekken5/run/vu_dumps
+    python tools/gen_vu.py --collect rust/vu_dumps
     python tools/gen_vu.py
 """
 import csv
@@ -263,7 +263,7 @@ def collect_elf(variant):
     sec = next(r for r in csv.DictReader(open(ROOT / "sheets" / "sections.csv", newline=""))
                if r["variant"] == variant and r["name"] == ".vutext")
     start, end = int(sec["start"], 16), int(sec["end"], 16) + 1
-    elf = (ROOT.parent / "Tekken5" / "extracted" / "elf" / f"{variant}.elf").read_bytes()
+    elf = (ROOT.parent / "DevilWithin" / "extracted" / "elf" / f"{variant}.elf").read_bytes()
     phoff, = struct.unpack_from("<I", elf, 0x1C)
     phnum, = struct.unpack_from("<H", elf, 0x2C)
     code = None

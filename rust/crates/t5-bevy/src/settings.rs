@@ -1,7 +1,7 @@
 //! Player settings and the P menu: volume, window mode, gamma, VSync, picture filtering and the
 //! FPS counter.
 //!
-//! Saved as JSON next to the controls (`%APPDATA%\Tekken5Decomp\settings.json`, or the
+//! Saved as JSON next to the controls (`%APPDATA%\DevilWithinMod\settings.json`, or the
 //! `T5_SETTINGS` path), so each player keeps their own. Every change applies and saves
 //! immediately.
 //!

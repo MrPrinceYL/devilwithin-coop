@@ -26,6 +26,10 @@ import sys
 # entry 6: the main game; IRXARC.BIN: Devil Within (other builds of NU_File_Manager etc.);
 # archive entry 7 (tk5data.py): the Arcade History titles.
 SOURCES = ["tk5data3/entry6.bin", "files/IRXARC.BIN", "tk5data3/entry7_irx.bin"]
+# DevilWithinMod: Devil Within loads its modules from IRXARC.BIN only; they keep the addresses
+# Tekken5Decomp gave them (its sheets and generated code were taken over unchanged).
+SOURCES = ["files/IRXARC.BIN"]
+FIXED_BASE = {"d91c3f": 0x0002_0000, "2fdaaa": 0x000B_0000, "fdc40d": 0x0008_0000, "f76dd9": 0x0006_0000}
 # Sources whose modules go to the upper area: the main game never loads them, so its IOP heap
 # (which starts after the modules below 0x100000, see `heap_start` in iop/exec.rs) stays as is.
 UPPER = {"tk5data3/entry7_irx.bin"}
@@ -177,6 +181,7 @@ def main():
     base = FIRST_BASE
     rows, imps, exps = [], [], []
     for sha, md in mods:
+        base = FIXED_BASE.get(sha[:6], base)
         upper = md["src"].split("+")[0] in UPPER
         if upper:
             base = max(base, UPPER_BASE)

@@ -1,9 +1,9 @@
 """Build the Spreadsheet-Method tables from the raw Ghidra exports.
 
-Inputs  (../../Tekken5/export/<variant>/): functions_raw.csv calls.csv strings.csv globals.csv
+Inputs  (../../DevilWithin/export/<variant>/): functions_raw.csv calls.csv strings.csv globals.csv
                                            sections.csv instructions.csv memory.csv registers.csv
                                            raw_c/*.c
-        (../../Tekken5/extracted/):        variants.csv (make_elfs.py), disc_files.csv
+        (../../DevilWithin/extracted/):        variants.csv (make_elfs.py), disc_files.csv
                                            (ps2_extract.py), tk5data3_toc.csv (tk5data.py), files/
 Outputs (sheets/):  meta.csv variants.csv functions.csv units.csv calls.csv strings.csv
                     globals.csv sections.csv registers.csv disc_files.csv tk5data3_toc.csv
@@ -35,7 +35,7 @@ from pathlib import Path
 
 csv.field_size_limit(1 << 30)
 OUT = Path(__file__).resolve().parent.parent                          # Tekken5Decomp/
-WORK = Path(os.environ.get("T5_WORK", OUT.parent / "Tekken5"))         # Ghidra project, export/, extracted/
+WORK = Path(os.environ.get("T5_WORK", OUT.parent / "DevilWithin"))         # Ghidra project, export/, extracted/
 EXP, EX, SHEETS, SRC = WORK / "export", WORK / "extracted", OUT / "sheets", OUT / "src"
 STATUSES = ["raw", "named", "typed", "clean", "verified"]
 UNIT_BYTES = 0x4000

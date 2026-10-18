@@ -19,6 +19,8 @@ import struct
 import sys
 
 COMPRESSED = range(0, 7)
+# DevilWithinMod: only entry 4 (Devil Within) is unpacked, no IRX stretches of the archives.
+UNPACK = (4,)
 
 
 def lz_decompress(src, pos=0):
@@ -64,7 +66,9 @@ def main():
         head = f.read(0x800)
         for i in range(struct.unpack_from('<I', head, 0)[0]):
             off, size = struct.unpack_from('<II', head, 4 + 8 * i)
-            if i in COMPRESSED:
+            if i in COMPRESSED and i not in UNPACK:
+                w.writerow([i, f'0x{off:X}', size, 1, '', 'not unpacked (DevilWithinMod)', ''])
+            elif i in COMPRESSED:
                 f.seek(base + off)
                 data, used = lz_decompress(f.read(size))
                 if used > size:
@@ -76,6 +80,7 @@ def main():
                 print(f'{i}: {size:#x} -> {len(data):#x} {kind}')
             else:
                 w.writerow([i, f'0x{off:X}', size, 0, size, 'archive', ''])
+                continue
                 f.seek(base + off)
                 data = f.read(size)
                 irx = [m.start() for m in re.finditer(rb'\x7fELF\x01\x01\x01', data)
