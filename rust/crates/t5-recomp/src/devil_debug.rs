@@ -268,6 +268,39 @@ fn stage_select(m: &mut Machine, prev: &mut u32) {
     }
 }
 
+/// "Return to Devil Within title" (the main menu's "return to mode select", text changed by
+/// devil_text, as in the pause menu): the exit task (update 0x1040D0, made by 0x104040) fades out over states -25..0x18,
+/// then in 0x19 shuts the system down and LoadExecPS2es Tekken 5 (`cdrom0:\SLUS_210.59;1`, which
+/// would just start Devil Within again here, into a black screen). Its unused state 0x1A ends the
+/// task and restarts the title task (0x103678(1): +0x54 = 1 main menu); the mod takes that path
+/// and then sets +0x54 = 0, the title screen (what the pause menu's entry does, 0x104558 state 9:
+/// 0x103678(0)), before the title task reads it the next frame.
+fn exit_to_title(m: &mut Machine) {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    static TO_TITLE: AtomicBool = AtomicBool::new(false);
+    let title = word(m, MODE_TASK);
+    if TO_TITLE.load(Relaxed) {
+        if title != 0 && word(m, title + 0x20) == TITLE_TASK_FN && word(m, title + 0x34) == 0 && word(m, title + 0x54) == 1 {
+            ram_write(m, title + 0x54, 4, 0);
+            TO_TITLE.store(false, Relaxed);
+        }
+        return;
+    }
+    let mut t = word(m, TASK_POOL + 8);
+    for _ in 0..1024 {
+        if t == 0 {
+            break;
+        }
+        if word(m, t + 0x20) == 0x0010_40D0 && word(m, t + 0x34) == 0x19 {
+            ram_write(m, t + 0x34, 4, 0x1A);
+            TO_TITLE.store(true, Relaxed);
+            ps2_runtime::diag::log("devil: return to title screen".into());
+            return;
+        }
+        t = word(m, t + 0x18);
+    }
+}
+
 fn hook(m: &mut Machine) {
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     static DONE: AtomicBool = AtomicBool::new(false);
@@ -286,6 +319,7 @@ fn hook(m: &mut Machine) {
         let mut prev = PREV.lock().unwrap();
         stage_select(m, &mut prev);
     }
+    exit_to_title(m);
 
     let mut text = overlay(m);
     crate::devil_mod::update(m, &mut text);

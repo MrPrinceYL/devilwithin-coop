@@ -541,6 +541,10 @@ fn do_exec(m: &mut Machine, e: Exec) {
 /// entries packed with `lz_unpack`.
 pub static BOOT_PACKED: std::sync::OnceLock<(&'static str, usize)> = std::sync::OnceLock::new();
 
+/// Called with the unpacked BOOT_PACKED program before it is loaded (a mod changing its data and
+/// laying changed files over the disc image).
+pub static IMAGE_PATCH: std::sync::OnceLock<fn(&mut Machine, &mut Vec<u8>)> = std::sync::OnceLock::new();
+
 /// A disc path without device, leading separator and version, upper case.
 fn disc_name(path: &str) -> String {
     let p = path.trim_start_matches("cdrom0:").trim_start_matches("cdrom:");
@@ -597,8 +601,11 @@ fn program_image(m: &mut Machine, path: &str) -> Option<Vec<u8>> {
         let (off, size) = (rd(4 + 8 * entry), rd(8 + 8 * entry));
         let mut packed = vec![0u8; size as usize];
         d.read_into(lba as u64 * 2048 + off as u64, &mut packed).ok()?;
-        let data = lz_unpack(&packed)?;
+        let mut data = lz_unpack(&packed)?;
         diag::log(format!("{path} -> {archive} entry {entry} ({size} -> {} bytes)", data.len()));
+        if let Some(f) = IMAGE_PATCH.get() {
+            f(m, &mut data);
+        }
         return Some(data);
     }
     let (lba, size) = d.find(path)?;

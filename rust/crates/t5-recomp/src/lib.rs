@@ -14,6 +14,7 @@ pub fn disc_path() -> String {
 pub mod devil_chars;
 pub mod devil_debug;
 pub mod devil_mod;
+pub mod devil_text;
 
 pub fn boot() -> ps2_runtime::Shared {
     ps2_runtime::diag::init("t5_trace.log");
@@ -22,6 +23,8 @@ pub fn boot() -> ps2_runtime::Shared {
     // Straight into Devil Within: TK5DATA3 entry 4 instead of Tekken 5 (SLUS_210.59); its "return
     // to mode select" (LoadExecPS2 of SLUS_210.59) starts it again.
     let _ = ps2_runtime::kernel::BOOT_PACKED.set(("TK5DATA3.BIN", 4));
+    // The texts naming Tekken 5 / its mode select, changed in the game data (devil_text).
+    let _ = ps2_runtime::kernel::IMAGE_PATCH.set(devil_text::patch_program);
     devil_debug::install();
     ps2_runtime::create(&disc_path(), PROGRAMS, IOP_MODULES)
 }

@@ -10,13 +10,15 @@ pub struct Disc {
     pub sectors: u64,
     /// Every file: upper-case path without version (e.g. "TK5DATA3.BIN"), LBA, size.
     pub files: Vec<(String, u32, u32)>,
+    /// Bytes laid over the image (a mod's changed files, `overlay`): (byte offset, data).
+    overlays: Vec<(u64, Vec<u8>)>,
 }
 
 impl Disc {
     pub fn open(path: &str) -> std::io::Result<Disc> {
         let file = File::open(path)?;
         let sectors = file.metadata()?.len() / SECTOR;
-        let mut d = Disc { file, sectors, files: Vec::new() };
+        let mut d = Disc { file, sectors, files: Vec::new(), overlays: Vec::new() };
         let pvd = d.read_bytes(16, 2048)?;
         if &pvd[1..6] != b"CD001" {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not an ISO9660 image"));
@@ -72,7 +74,7 @@ impl Disc {
         Ok(buf)
     }
 
-    /// Fill `buf` from byte offset `off` (zeros past the end of the image).
+    /// Fill `buf` from byte offset `off` (zeros past the end of the image, overlays on top).
     pub fn read_into(&mut self, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
         buf.fill(0);
         self.file.seek(SeekFrom::Start(off))?;
@@ -84,7 +86,31 @@ impl Disc {
             }
             got += n;
         }
+        let end = off + buf.len() as u64;
+        for (o, data) in &self.overlays {
+            let (from, to) = (off.max(*o), end.min(*o + data.len() as u64));
+            if from < to {
+                buf[(from - off) as usize..(to - off) as usize].copy_from_slice(&data[(from - o) as usize..(to - o) as usize]);
+            }
+        }
         Ok(())
+    }
+
+    /// Lay `data` over the image at byte offset `off` (may lie past its end).
+    pub fn overlay(&mut self, off: u64, data: Vec<u8>) {
+        self.overlays.push((off, data));
+    }
+
+    /// Change the size the file system gives a file (to reach overlays behind it).
+    pub fn set_size(&mut self, path: &str, size: u32) -> bool {
+        let p = path.to_uppercase();
+        match self.files.iter_mut().find(|(n, _, _)| *n == p) {
+            Some(f) => {
+                f.2 = size;
+                true
+            }
+            None => false,
+        }
     }
 
     /// A file by path ("cdrom0:\\TK5DATA3.BIN;1", "\\SLUS_210.59", "tk5data3.bin" ...).
