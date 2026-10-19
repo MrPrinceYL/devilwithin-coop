@@ -3,8 +3,8 @@
     python tools/dw_cap_text.py <pack.pak> <entry name>
 
 Layout (cap_teg_msg_font_menutext): "CAP\\0", +4 glyph count, +0x10 offsets; glyph records of
-16 bytes (+0xE character code); the texts are 16-bit codes: >= 0x100 a glyph (all
-characters code + 0xE1), 2 space, 3 line break, 0 end of a text,
+16 bytes (+0xE character code); the texts are 16-bit codes: >= 0x100 a glyph (lower-case
+letters code + 0xC1, other characters code + 0xE1), 2 space, 3 line break, 0 end of a text,
 others control codes (shown as <n>).
 """
 import struct
@@ -27,8 +27,10 @@ def text(b, o):
         elif v == 3:
             cur += chr(10)
         elif v >= 0x100:
-            # Every character is stored as code + 0xE1 (menu texts in capitals).
-            c = v - 0xE1
+            # Lower-case letters are stored as code + 0xC1, every other character as code + 0xE1.
+            c = v - 0xC1
+            if not 0x61 <= c <= 0x7A:
+                c -= 0x20
             cur += chr(c) if 0x20 <= c < 0x7F else f'<g{v:#x}>'
         else:
             cur += f'<{v}>'

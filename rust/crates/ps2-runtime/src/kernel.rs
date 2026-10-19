@@ -1453,25 +1453,7 @@ pub fn hle(_c: &mut Ctx, addr: u32) -> bool {
 }
 
 /// A computed call to an address no recompiled function covers.
-/// Rust functions a mod puts at addresses no program code uses (a guest pointer to one, e.g. a
-/// menu entry's handler, calls it): (address, function).
-static MOD_FUNCS: std::sync::Mutex<Vec<(u32, fn(&mut Ctx, u32))>> = std::sync::Mutex::new(Vec::new());
-
-/// Make guest calls of `addr` run `f(ctx, addr)` (a0.. as the guest passed them; v0 is what `f`
-/// sets).
-pub fn register_mod_func(addr: u32, f: fn(&mut Ctx, u32)) {
-    if let Ok(mut v) = MOD_FUNCS.lock() {
-        v.retain(|(a, _)| *a != addr);
-        v.push((addr, f));
-    }
-}
-
 pub fn unknown_call(c: &mut Ctx, addr: u32) -> bool {
-    let f = MOD_FUNCS.lock().ok().and_then(|v| v.iter().find(|(a, _)| *a == addr).map(|(_, f)| *f));
-    if let Some(f) = f {
-        f(c, addr);
-        return true;
-    }
     let m = machine();
     diag::once(format!(
         "unknown call target {addr:#010x} from {:#010x} ({}) ra {:#010x}",

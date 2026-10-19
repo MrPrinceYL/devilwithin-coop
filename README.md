@@ -34,15 +34,7 @@ Run **`play.bat`** (Windows) or **`play.sh`** (Linux). The first run builds ever
 takes a while), later runs start in seconds. The Tekken 5 disc image is read from `T5_DISC`
 (default `E:\Decompilation\Game\Tekken 5 (USA).iso`); the game starts directly in Devil Within.
 
-- **OPTIONS** in the game's main menu (PC-port style, in the game's own menus): GRAPHICS (preset
-  PS2 Classic / Modern / Custom, render resolution native to 4x, 4:3 / 16:9 widescreen,
-  filtering, brightness), DISPLAY (windowed / borderless / fullscreen, resolution, VSync, FPS
-  counter, disc loading), SOUND (master, music, effects), CONTROLS (mouse camera, sensitivity,
-  invert, stick dead zone, key bindings). Left / Right change a value, Triangle goes back. In the
-  game's menus the mouse wheel moves, left click chooses, right click goes back. Saved in
-  `%APPDATA%\DevilWithinMod\settings.json`.
-- Keyboard and gamepads work at once. KEY BINDINGS (OPTIONS > CONTROLS) or F2 rebinds controls
-  (`%APPDATA%\DevilWithinMod\controls.json`).
+- Keyboard and gamepads work at once. F2 rebinds controls (`%APPDATA%\DevilWithinMod\controls.json`).
   Default keyboard: arrows / WASD = D-pad, X or Space = Cross, C = Circle, Z = Square,
   V = Triangle, Q / E = L1 / R1, 1 / 3 = L2 / R2, F / G = L3 / R3, Enter = Start,
   Tab / Right Shift = Select.
@@ -55,7 +47,8 @@ takes a while), later runs start in seconds. The Tekken 5 disc image is read fro
   EXTRA-DEBUG; Down past "back" lists Makino's test room and every boss fight) or
   `T5_DW_DEBUG=dev` (developer mode menu). Set it before `play.bat`
   (PowerShell: `$env:T5_DW_DEBUG = "title"`).
-- F1 shows the debug overlay. Holding F3 fast-forwards. F11 / Alt+Enter: windowed / borderless.
+- P opens the settings (volume, window mode, gamma, VSync, picture, FPS counter, faster disc
+  loading). F1 shows the debug overlay. Holding F3 fast-forwards. F11 / Alt+Enter: fullscreen.
 - Memory cards are folders (`memcard\port0`, `memcard\port1`; `T5_MEMCARD` moves them).
 - `rust\t5_trace.log` is the diagnostics log. If something goes wrong, send it.
 

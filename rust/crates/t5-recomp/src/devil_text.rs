@@ -6,8 +6,8 @@
 //!
 //! The texts are "CAP" files (BDPK entry type 5, DevilWithin.md "Story-Texte"): "CAP\0", +0x18
 //! index (8 bytes per entry {u16 text offset in 16-bit units, u16, u16 number, u16}), +0x1C texts
-//! to the end of the file: 16-bit codes, every character code + 0xE1 (the
-//! menu texts in capitals), 0 pause / end, 1 break (help texts), 2 line end, 3 space.
+//! to the end of the file: 16-bit codes, lower-case letters code + 0xC1, other characters code +
+//! 0xE1, 0 pause / end, 1 break (help texts), 2 line end, 3 space.
 
 use ps2_runtime::Machine;
 
@@ -15,19 +15,14 @@ use ps2_runtime::Machine;
 /// The main menu's "return to mode select" takes the pause menu's "return to devil within title"
 /// (and its help text); the memory card messages name Devil Within.
 const EDITS: &[(&str, &str, &str)] = &[
-    ("cap_teg_msg_font_menutext", "return to mode select", "RETURN TO DEVIL WITHIN TITLE"),
+    ("cap_teg_msg_font_menutext", "return to mode select", "return to devil within title"),
     (
         "cap_teg_msg_font_account",
         "exit devil within and return to the mode select screen.",
-        "Return to the DEVIL WITHIN title screen.",
+        "return to devil within title screen.",
     ),
-    ("cap_teg_msg_font_save", "tekken 5", "DEVIL WITHIN"),
+    ("cap_teg_msg_font_save", "tekken 5", "devil within"),
 ];
-
-/// New texts: the options menu's names and values (menutext) and help texts (account,
-/// devil_options). Word gaps use code 3 and a text ends with code 2, as the game's own; help
-/// texts break into lines of at most HELP_LINE characters with code 1.
-const HELP_LINE: usize = 58;
 
 /// The packs with those texts (TK5DATA2 files).
 const PACKS: &[&str] = &["common/base.pak", "common/boot_us.pak", "common/demo.pak", "common/inst.pak"];
@@ -42,16 +37,18 @@ fn decode(v: u16) -> char {
     match v {
         2 | 3 => ' ',
         v if v >= 0x100 => {
-            // Matched without regard to case.
-            let c = v as i32 - 0xE1;
-            if (0x20..0x7F).contains(&c) { (c as u8 as char).to_ascii_lowercase() } else { '\u{1}' }
+            let mut c = v as i32 - 0xC1;
+            if !(0x61..=0x7A).contains(&c) {
+                c -= 0x20;
+            }
+            if (0x20..0x7F).contains(&c) { c as u8 as char } else { '\u{1}' }
         }
         _ => '\u{1}',
     }
 }
 
 fn encode(c: char) -> u16 {
-    c as u16 + 0xE1
+    if c.is_ascii_lowercase() { c as u16 + 0xC1 } else { c as u16 + 0xE1 }
 }
 
 fn rd32(b: &[u8], o: usize) -> Option<usize> {
@@ -67,7 +64,7 @@ fn rebuild(cap: &[u8], from: &str, to: &str) -> Option<Vec<u8>> {
     }
     let codes: Vec<u16> = cap[texts..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let chars: Vec<char> = codes.iter().map(|&v| decode(v)).collect();
-    let from: Vec<char> = from.to_ascii_lowercase().chars().collect();
+    let from: Vec<char> = from.chars().collect();
     let mut out = Vec::with_capacity(codes.len());
     let mut moved = vec![0usize; codes.len() + 1];
     let (mut i, mut hits) = (0, 0);
@@ -101,65 +98,6 @@ fn rebuild(cap: &[u8], from: &str, to: &str) -> Option<Vec<u8>> {
     Some(new)
 }
 
-/// Help texts as the game writes them: sentences start with a capital, PS2 / FPS / VSync too.
-fn sentence_case(t: &str) -> String {
-    let mut out = String::with_capacity(t.len());
-    let mut start = true;
-    for c in t.chars() {
-        out.push(if start && c.is_ascii_alphabetic() { c.to_ascii_uppercase() } else { c });
-        if c.is_ascii_alphabetic() {
-            start = false;
-        } else if c == '.' {
-            start = true;
-        }
-    }
-    out.replace("ps2", "PS2").replace("fps", "FPS").replace("vsync", "VSync")
-}
-
-/// A text's codes: words separated by code 3, broken into lines of `line` characters (code 1),
-/// ended by code 2.
-fn codes(text: &str, line: usize) -> Vec<u16> {
-    let mut out = Vec::new();
-    let mut col = 0;
-    for (i, w) in text.split(' ').enumerate() {
-        if i > 0 {
-            if col + 1 + w.len() > line {
-                out.push(1);
-                col = 0;
-            } else {
-                out.push(3);
-                col += 1;
-            }
-        }
-        out.extend(w.chars().map(encode));
-        col += w.len();
-    }
-    out.push(2);
-    out
-}
-
-/// The CAP with `text` added under the next free number (index entry before the texts, the
-/// text at the end): (new CAP, number).
-fn append(cap: &[u8], text: &[u16]) -> Option<(Vec<u8>, u32)> {
-    let (count, index, texts) = (rd32(cap, 4)?, rd32(cap, 0x18)?, rd32(cap, 0x1C)?);
-    if cap.get(..3)? != b"CAP" || index + 8 * count != texts || texts > cap.len() {
-        return None;
-    }
-    let number = (0..count).map(|i| u16::from_le_bytes([cap[index + 8 * i + 4], cap[index + 8 * i + 5]]) as u32).max().unwrap_or(0) + 1;
-    let at = (cap.len() - texts) / 2;
-    let last = index + 8 * (count - 1);
-    let mut entry = cap[last..last + 8].to_vec();
-    entry[0..2].copy_from_slice(&(at as u16).to_le_bytes());
-    entry[4..6].copy_from_slice(&(number as u16).to_le_bytes());
-    let mut new = cap[..texts].to_vec();
-    new.extend_from_slice(&entry);
-    new.extend_from_slice(&cap[texts..]);
-    new[4..8].copy_from_slice(&((count + 1) as u32).to_le_bytes());
-    new[0x1C..0x20].copy_from_slice(&((texts + 8) as u32).to_le_bytes());
-    new.extend(text.iter().flat_map(|v| v.to_le_bytes()));
-    Some((new, number))
-}
-
 /// The BDPK pack with its CAP entries edited, or None if nothing changed. Entries stay in place
 /// except that those behind a grown CAP move by its growth (rounded to 0x80, keeping the data's
 /// alignment); the header's group ends +0x40..+0x4C (+0x48 = start of the texture data, where a
@@ -180,25 +118,6 @@ fn repack(pack: &[u8]) -> Option<Vec<u8>> {
             for (_, from, to) in EDITS.iter().filter(|x| x.0 == name) {
                 if let Some(new) = rebuild(&data, from, to) {
                     data = new;
-                }
-            }
-            let (texts, line) = match name {
-                "cap_teg_msg_font_menutext" => (crate::devil_options::menu_texts(), usize::MAX),
-                "cap_teg_msg_font_account" => (crate::devil_options::help_texts(), HELP_LINE),
-                _ => (Vec::new(), 0),
-            };
-            let mut got = Vec::new();
-            for t in texts {
-                // Menu texts are capitals, as the game's own.
-                let shown = if line == usize::MAX { t.to_ascii_uppercase() } else { sentence_case(&t) };
-                if let Some((new, n)) = append(&data, &codes(&shown, line)) {
-                    data = new;
-                    got.push((t, n));
-                }
-            }
-            if !got.is_empty() {
-                if let Ok(mut nums) = crate::devil_options::NUMBERS.lock() {
-                    if name == "cap_teg_msg_font_menutext" { nums.0 = got } else { nums.1 = got }
                 }
             }
         }

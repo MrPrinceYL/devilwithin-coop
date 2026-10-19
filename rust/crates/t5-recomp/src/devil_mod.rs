@@ -413,7 +413,7 @@ const HEAL_30: u32 = 0x001D_92B0;
 const SET_COLLECT: u32 = 0x001D_9A78;
 const CLEAR_COLLECT: u32 = 0x001D_9AF0;
 
-pub(crate) fn word(m: &Machine, a: u32) -> u32 {
+fn word(m: &Machine, a: u32) -> u32 {
     ram_read(m, a, 4) as u32
 }
 

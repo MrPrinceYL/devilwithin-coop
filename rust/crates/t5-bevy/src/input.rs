@@ -3,8 +3,7 @@
 //!
 //! Bindings live in a per-user JSON file (`controls.json` in the platform config folder,
 //! e.g. `%APPDATA%\DevilWithinMod\controls.json`), so everyone who plays a shared copy keeps their
-//! own. On first run the file is created from the defaults. The options screen's CONTROLS page (F2)
-//! rebinds them.
+//! own. On first run the file is created from the defaults. F2 opens the in-game rebinding screen.
 //!
 //! A binding is a list of sources per pad button. Sources are strings:
 //! `Key:KeyX`, `Mouse:Left`, `MouseMove:X+`, `Pad:South`, `Axis:LeftStickX+`.
@@ -20,7 +19,7 @@
 //! resting at -1, which would otherwise read as a held direction).
 
 use bevy::input::gamepad::{GamepadAxis, GamepadButton};
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use crate::hid;
 use ps2_runtime::pad::{self, PadShared};
@@ -330,7 +329,7 @@ pub struct Input {
     pad: Arc<PadShared>,
     /// Sony pads read over HID (see hid.rs).
     hid: hid::Hid,
-    /// Buttons each HID pad held last frame (to find newly pressed ones when rebinding).
+    /// Buttons each HID pad held last frame (to find newly pressed ones in the F2 menu).
     hid_prev: HashMap<u32, Vec<GamepadButton>>,
     /// Gamepads seen so far (for the connect / disconnect log).
     seen: HashMap<PadId, String>,
@@ -338,13 +337,10 @@ pub struct Input {
     /// that never sends anything (a virtual controller of Steam / DS4Windows, a duplicate entry of
     /// the same pad) cannot take port 1 away from the controller actually in use.
     active: HashMap<PadId, std::time::Instant>,
-    /// Pad buttons of the gamepads alone (left stick as D-pad), for the options screen.
-    pub menu_buttons: u16,
-    /// Mouse camera on (cursor captured): mouse movement turns the right stick; Y inverted.
-    pub mouse_look: bool,
-    pub invert_y: bool,
-    /// Mouse in the game's menus: wheel steps as D-pad up / down (held a few frames).
-    wheel_hold: (u16, u8),
+    // Rebinding screen.
+    pub menu_open: bool,
+    selected: usize,
+    capturing: bool,
 }
 
 impl Input {
@@ -362,10 +358,9 @@ impl Input {
             hid_prev: HashMap::new(),
             seen: HashMap::new(),
             active: HashMap::new(),
-            menu_buttons: 0,
-            mouse_look: false,
-            invert_y: false,
-            wheel_hold: (0, 0),
+            menu_open: false,
+            selected: 0,
+            capturing: false,
         };
         i.reparse();
         i
@@ -489,7 +484,6 @@ pub fn read_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
     pads: Query<(Entity, &Gamepad, Option<&Name>)>,
     mut input: ResMut<Input>,
 ) {
@@ -511,21 +505,7 @@ pub fn read_input(
             ps2_runtime::diag::log(format!("gamepad {id}: first input, it is now the controller for port {}", port.min(2)));
         }
     }
-    // The gamepads alone, for menus: their buttons, the left stick as D-pad.
-    {
-        let none = ButtonInput::<KeyCode>::default();
-        let none_m = ButtonInput::<MouseButton>::default();
-        let devp = Devices { keys: &none, mouse: &none_m, pads: all.clone(), origins: &input.origins, mouse_stick: Vec2::ZERO, deadzone: c.deadzone };
-        let mut b = input.buttons(&devp);
-        let st = input.sticks(&devp);
-        let (lx, ly) = (((st >> 16) & 0xFF) as i32 - 128, ((st >> 24) & 0xFF) as i32 - 128);
-        if lx < -80 { b |= pad::LEFT; }
-        if lx > 80 { b |= pad::RIGHT; }
-        if ly < -80 { b |= pad::UP; }
-        if ly > 80 { b |= pad::DOWN; }
-        input.menu_buttons = b;
-    }
-    if crate::settings::MENU_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+    if input.menu_open || crate::settings::MENU_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
         input.pad.set(0, 0, true);
         input.pad.set(1, 0, input.active.len() >= 2);
         input.pad.set_sticks(0, 0);
@@ -539,42 +519,11 @@ pub fn read_input(
     let none_m = ButtonInput::<MouseButton>::default();
     let two = pads.len() >= 2 && input.active.len() >= 2;
     let p1_pads: Vec<(PadId, PadRef)> = if two { pads[..1].to_vec() } else { pads.clone() };
-    // The game's menus (main menu, OPTIONS): wheel moves the cursor, left click chooses, right
-    // click goes back.
-    let mut menu_mouse = 0u16;
-    if t5_recomp::devil_options::IN_MENU.load(std::sync::atomic::Ordering::Relaxed) {
-        if scroll.delta.y > 0.0 {
-            input.wheel_hold = (pad::UP, 4);
-        } else if scroll.delta.y < 0.0 {
-            input.wheel_hold = (pad::DOWN, 4);
-        }
-        if mouse.pressed(MouseButton::Left) {
-            menu_mouse |= pad::CIRCLE;
-        }
-        if mouse.pressed(MouseButton::Right) {
-            menu_mouse |= pad::TRIANGLE;
-        }
-    }
-    if input.wheel_hold.1 > 0 {
-        input.wheel_hold.1 -= 1;
-        // Pressed for 2 frames, then released (a new step needs a new press).
-        if input.wheel_hold.1 >= 2 {
-            menu_mouse |= input.wheel_hold.0;
-        }
-    }
     let dev1 = Devices { keys: &keys, mouse: &mouse, pads: p1_pads, origins: &input.origins, mouse_stick: ms, deadzone: c.deadzone };
     // Scripted presses of a measurement run (`--press`, t5_recomp::script).
-    let b1 = input.buttons(&dev1) | t5_recomp::script::held() | menu_mouse;
+    let b1 = input.buttons(&dev1) | t5_recomp::script::held();
     input.pad.set(0, b1, true);
-    let mut st1 = input.sticks(&dev1);
-    if input.mouse_look {
-        // Mouse camera: the mouse's virtual stick on the right stick (RX, RY bytes).
-        let add = |byte: u32, v: f32| ((byte as f32 - 128.0 + v * 127.5).round() + 128.0).clamp(0.0, 255.0) as u32;
-        let rx = add(st1 & 0xFF, ms.x);
-        let ry = add((st1 >> 8) & 0xFF, if input.invert_y { -ms.y } else { ms.y });
-        st1 = (st1 & 0xFFFF_0000) | rx | (ry << 8);
-    }
-    input.pad.set_sticks(0, st1);
+    input.pad.set_sticks(0, input.sticks(&dev1));
     if two {
         let dev2 = Devices { keys: &none, mouse: &none_m, pads: pads[1..2].to_vec(), origins: &input.origins, mouse_stick: Vec2::ZERO, deadzone: c.deadzone };
         let b2 = input.buttons(&dev2);
@@ -623,102 +572,123 @@ fn gamepad_used(origins: &Origins, id: PadId, g: PadRef) -> bool {
         || PAD_AXES.iter().any(|a| origins.adjust(id, &name(a), g.axis(*a).unwrap_or(0.0)).abs() > 0.6)
 }
 
-// ---- rebinding (the options screen's CONTROLS page) ----
+// ---- rebinding screen (F2) ----
 
-impl Input {
-    /// Buttons newly pressed on the HID pads since the last call (Bevy tracks its own
-    /// gamepads' presses); call once per frame.
-    pub fn hid_presses(&mut self) -> Vec<GamepadButton> {
-        let hid_pads = self.hid.snapshot();
-        let mut new: Vec<GamepadButton> = Vec::new();
-        for h in &hid_pads {
-            let held = h.held();
-            let prev = self.hid_prev.get(&h.id).cloned().unwrap_or_default();
-            new.extend(held.iter().copied().filter(|b| !prev.contains(b)));
-            self.hid_prev.insert(h.id, held);
-        }
-        new
+#[derive(Component)]
+pub struct ControlsText;
+
+/// Build the (hidden) F2 controls menu.
+pub fn setup_menu(mut commands: Commands) {
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: FontSize::Px(15.0), ..default() },
+        TextColor(Color::WHITE),
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
+        Node { position_type: PositionType::Absolute, top: Val::Px(10.0), right: Val::Px(10.0), padding: UiRect::all(Val::Px(10.0)), ..default() },
+        Visibility::Hidden,
+        ControlsText,
+    ));
+}
+
+/// F2: open/close. Up/Down select, Enter: add a binding (press the input), Backspace: clear,
+/// R: reset all to defaults. Every change is saved to controls.json immediately.
+pub fn menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    pads: Query<(Entity, &Gamepad, Option<&Name>)>,
+    mut input: ResMut<Input>,
+    mut text: Query<(&mut Text, &mut Visibility), With<ControlsText>>,
+) {
+    // Newly pressed buttons of the HID pads (Bevy tracks its own gamepads' presses).
+    let hid_pads = input.hid.snapshot();
+    let mut hid_new: Vec<GamepadButton> = Vec::new();
+    for h in &hid_pads {
+        let held = h.held();
+        let prev = input.hid_prev.get(&h.id).cloned().unwrap_or_default();
+        hid_new.extend(held.iter().copied().filter(|b| !prev.contains(b)));
+        input.hid_prev.insert(h.id, held);
     }
-
-    /// The first newly pressed key / mouse button / pad button / pushed axis as a binding
-    /// (`Key:..`, `Mouse:..`, `Pad:..`, `Axis:..+-`), Escape excepted.
-    pub fn capture(&self, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>, pads: &Query<(Entity, &Gamepad, Option<&Name>)>, hid_new: &[GamepadButton]) -> Option<String> {
-        if let Some(k) = keys.get_just_pressed().find(|k| **k != KeyCode::Escape && KEYS.contains(k)) {
-            return Some(format!("Key:{}", name(k)));
+    if keys.just_pressed(KeyCode::F2) {
+        input.menu_open = !input.menu_open;
+        input.capturing = false;
+    }
+    let Ok((mut t, mut vis)) = text.single_mut() else { return };
+    *vis = if input.menu_open { Visibility::Visible } else { Visibility::Hidden };
+    if !input.menu_open {
+        return;
+    }
+    let sel = input.selected;
+    let control = CONTROLS[sel].to_string();
+    let mut changed = false;
+    if input.capturing {
+        // First newly pressed key / mouse button / pad button / pushed axis becomes a binding.
+        let mut got: Option<String> = None;
+        if let Some(k) = keys.get_just_pressed().find(|k| **k != KeyCode::Enter && **k != KeyCode::F2) {
+            if KEYS.contains(k) {
+                got = Some(format!("Key:{}", name(k)));
+            }
         }
-        if let Some(b) = mouse.get_just_pressed().find(|b| MOUSE.contains(b)) {
-            return Some(format!("Mouse:{}", name(b)));
+        if got.is_none() {
+            got = mouse.get_just_pressed().find(|b| MOUSE.contains(b)).map(|b| format!("Mouse:{}", name(b)));
         }
-        if let Some(b) = hid_new.iter().find(|b| PAD_BUTTONS.contains(b)) {
-            return Some(format!("Pad:{}", name(b)));
+        if got.is_none() {
+            got = hid_new.iter().find(|b| PAD_BUTTONS.contains(b)).map(|b| format!("Pad:{}", name(b)));
         }
-        let hid_pads = self.hid.snapshot();
-        for (id, g) in all_pads(pads, &hid_pads) {
+        for (id, g) in all_pads(&pads, &hid_pads) {
+            if got.is_some() {
+                break;
+            }
             if let PadRef::Bevy(bg) = g {
-                if let Some(b) = bg.get_just_pressed().find(|b| PAD_BUTTONS.contains(b)) {
-                    return Some(format!("Pad:{}", name(b)));
+                got = bg.get_just_pressed().find(|b| PAD_BUTTONS.contains(b)).map(|b| format!("Pad:{}", name(b)));
+            }
+            if got.is_none() {
+                for a in PAD_AXES {
+                    let x = input.origins.adjust(id, &name(a), g.axis(*a).unwrap_or(0.0));
+                    if x.abs() > 0.7 {
+                        got = Some(format!("Axis:{}{}", name(a), if x > 0.0 { "+" } else { "-" }));
+                        break;
+                    }
                 }
             }
-            for a in PAD_AXES {
-                let x = self.origins.adjust(id, &name(a), g.axis(*a).unwrap_or(0.0));
-                if x.abs() > 0.7 {
-                    return Some(format!("Axis:{}{}", name(a), if x > 0.0 { "+" } else { "-" }));
-                }
+        }
+        if keys.just_pressed(KeyCode::Escape) {
+            input.capturing = false;
+        } else if let Some(g) = got {
+            let list = input.controls.bindings.entry(control.clone()).or_default();
+            if !list.contains(&g) {
+                list.push(g);
             }
+            input.capturing = false;
+            changed = true;
         }
-        None
-    }
-
-    /// A control's bindings for display.
-    pub fn binding_text(&self, control: &str) -> String {
-        let l = self.controls.bindings.get(control).cloned().unwrap_or_default();
-        if l.is_empty() {
-            return "-".into();
+    } else {
+        if keys.just_pressed(KeyCode::ArrowDown) {
+            input.selected = (sel + 1) % CONTROLS.len();
         }
-        l.iter()
-            .map(|b| {
-                let (kind, rest) = b.split_once(':').unwrap_or(("", b));
-                // KeyX -> X, Digit1 -> 1.
-                let rest = rest.strip_prefix("Key").filter(|r| r.len() == 1).or_else(|| rest.strip_prefix("Digit")).unwrap_or(rest);
-                match kind {
-                    "Pad" | "Axis" => format!("Pad {rest}"),
-                    "Mouse" => format!("Mouse {rest}"),
-                    "MouseMove" => format!("Mouse {rest}"),
-                    _ => rest.to_string(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
-    /// Add a binding to a control (saved at once).
-    pub fn add_binding(&mut self, control: &str, b: String) {
-        let list = self.controls.bindings.entry(control.to_string()).or_default();
-        if !list.contains(&b) {
-            list.push(b);
+        if keys.just_pressed(KeyCode::ArrowUp) {
+            input.selected = (sel + CONTROLS.len() - 1) % CONTROLS.len();
         }
-        self.controls.save();
-        self.reparse();
+        if keys.just_pressed(KeyCode::Enter) {
+            input.capturing = true;
+        }
+        if keys.just_pressed(KeyCode::Backspace) {
+            input.controls.bindings.insert(control.clone(), Vec::new());
+            changed = true;
+        }
+        if keys.just_pressed(KeyCode::KeyR) {
+            input.controls.bindings = Controls::default().bindings;
+            changed = true;
+        }
     }
-
-    /// Remove a control's bindings (saved at once).
-    pub fn clear_binding(&mut self, control: &str) {
-        self.controls.bindings.insert(control.to_string(), Vec::new());
-        self.controls.save();
-        self.reparse();
+    if changed {
+        input.controls.save();
+        input.reparse();
     }
-
-    /// Every binding back to the defaults (saved at once).
-    pub fn reset_bindings(&mut self) {
-        self.controls.bindings = Controls::default().bindings;
-        self.controls.save();
-        self.reparse();
+    let mut s = format!("CONTROLS  (saved to {})\nUp/Down select | Enter add input | Backspace clear | R reset all | F2 close\n\n", config_path().display());
+    for (i, c) in CONTROLS.iter().enumerate() {
+        let b = input.controls.bindings.get(*c).map(|l| l.join(", ")).unwrap_or_default();
+        let mark = if i == input.selected { if input.capturing { ">> press an input <<  " } else { "> " } } else { "  " };
+        s += &format!("{mark}{c:<15} {b}\n");
     }
-
-    /// Change the stick dead zone / mouse sensitivity (saved at once).
-    pub fn set_tuning(&mut self, deadzone: f32, mouse_sensitivity: f32) {
-        self.controls.deadzone = deadzone.clamp(0.05, 0.9);
-        self.controls.mouse_sensitivity = mouse_sensitivity.clamp(0.002, 0.1);
-        self.controls.save();
-    }
+    t.0 = s;
 }

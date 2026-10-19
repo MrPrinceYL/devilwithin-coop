@@ -1,13 +1,5 @@
 // The GS rasterizer on the GPU. Every function mirrors raster.rs / gs.rs exactly (integer
 // arithmetic only), so the GPU's local memory is bit-identical to the CPU reference's.
-//
-// Higher render resolution (render scale S = P.d.w > 1, a front-end option, not 1:1): `hr`
-// holds S·S complete copies of local memory, one per sub-pixel ("plane" k = sy·S + sx). Every
-// batch is drawn twice: into the planes (`raster_hr`: edges and attributes evaluated at the
-// sub-pixel's offset, frame / depth buffer read and written in plane k; textures and CLUTs
-// still from local memory) and, unchanged, into local memory, which stays bit-exact for all
-// the game reads. Uploads write every plane, local copies copy every plane, `readout_hr` reads
-// the display out of the planes at S times the resolution.
 
 struct Params {
     a: vec4<u32>,
@@ -35,25 +27,6 @@ struct Prim {
 @group(0) @binding(6) var<storage, read_write> cluts: array<u32>;
 @group(0) @binding(7) var<storage, read> data: array<u32>;
 @group(0) @binding(8) var<uniform> P: Params;
-@group(0) @binding(9) var<storage, read_write> hr: array<atomic<u32>>;
-@group(0) @binding(10) var<storage, read_write> outb: array<u32>;
-
-// Words of local memory (the size of one plane).
-const HRW: u32 = 0x100000u;
-
-// Memory accesses go to local memory (g_tgt 0) or to plane g_k of `hr` (1); g_rep: a write to
-// local memory also goes to every plane (transfers). g_hr: drawing sub-pixel g_k (scale g_s),
-// offset (g_fx, g_fy) / (2·g_s) pixels from the pixel (g_bfx, g_bfy: the sub-pixel's offset,
-// lines use none).
-var<private> g_tgt: u32 = 0u;
-var<private> g_k: u32 = 0u;
-var<private> g_rep: bool = false;
-var<private> g_hr: bool = false;
-var<private> g_s: u32 = 1u;
-var<private> g_fx: i64 = 0li;
-var<private> g_fy: i64 = 0li;
-var<private> g_bfx: i64 = 0li;
-var<private> g_bfy: i64 = 0li;
 
 const PSMCT32: u32 = 0x00u;
 const PSMCT24: u32 = 0x01u;
@@ -140,38 +113,17 @@ const F_LCM: u32 = 65536u;
 // ---- local memory ----
 
 fn rd32(w: u32) -> u32 {
-    if g_tgt == 1u {
-        return atomicLoad(&hr[g_k * HRW + (w & 0xFFFFFu)]);
-    }
     return atomicLoad(&vram[w & 0xFFFFFu]);
-}
-
-fn wr_hr(i: u32, mask: u32, v: u32) {
-    if mask == 0xFFFFFFFFu {
-        atomicStore(&hr[i], v);
-    } else {
-        atomicAnd(&hr[i], ~mask);
-        atomicOr(&hr[i], v & mask);
-    }
 }
 
 // Write the bits `mask` of word `w` (other bits are left; other threads may own them).
 fn wr(w: u32, mask: u32, v: u32) {
     let i = w & 0xFFFFFu;
-    if g_tgt == 1u {
-        wr_hr(g_k * HRW + i, mask, v);
-        return;
-    }
     if mask == 0xFFFFFFFFu {
         atomicStore(&vram[i], v);
     } else {
         atomicAnd(&vram[i], ~mask);
         atomicOr(&vram[i], v & mask);
-    }
-    if g_rep {
-        for (var k = 0u; k < g_s * g_s; k = k + 1u) {
-            wr_hr(k * HRW + i, mask, v);
-        }
     }
 }
 
@@ -472,25 +424,7 @@ fn sample(s: u32, clut: u32, fs: i64, ft: i64, fq: i64, qs: i32) -> vec4<u32> {
 
 fn plane(pr: u32, i: u32, dx: i64, dy: i64) -> i64 {
     let p = prims[pr].p[i];
-    if g_hr {
-        let d = i64(2u * g_s);
-        return p.x + div_floor64(p.y * (dx * d + g_fx) + p.z * (dy * d + g_fy), d);
-    }
     return p.x + p.y * dx + p.z * dy;
-}
-
-// Frame / depth buffer access of the pixel pipeline: plane g_k when drawing a sub-pixel.
-fn fb_read(psm: u32, bp: u32, bw: u32, x: u32, y: u32) -> u32 {
-    g_tgt = select(0u, 1u, g_hr);
-    let v = read_pixel(psm, bp, bw, x, y);
-    g_tgt = 0u;
-    return v;
-}
-
-fn fb_store(psm: u32, bp: u32, bw: u32, x: u32, y: u32, v: u32) {
-    g_tgt = select(0u, 1u, g_hr);
-    store_pixel(psm, bp, bw, x, y, v);
-    g_tgt = 0u;
 }
 
 fn ch(v: i64) -> u32 {
@@ -628,7 +562,7 @@ fn plot(pr: u32, x: i32, y: i32, dx: i64, dy: i64) {
     let need_dst = blend || (fl & F_DATE) != 0u || st(s, S_FBMSK) != 0u || write_rgb_only || fpsm != PSMCT32 || !write_fb;
     var dst = 0u;
     if need_dst {
-        dst = fb_read(fpsm, fbp, fbw, ux, uy);
+        dst = read_pixel(fpsm, fbp, fbw, ux, uy);
     }
     var d = vec4<u32>(dst & 0xFFu, (dst >> 8u) & 0xFFu, (dst >> 16u) & 0xFFu, dst >> 24u);
     let is16 = fpsm == PSMCT16 || fpsm == PSMCT16S || fpsm == PSMZ16 || fpsm == PSMZ16S;
@@ -655,7 +589,7 @@ fn plot(pr: u32, x: i32, y: i32, dx: i64, dy: i64) {
     let zpsm = st(s, S_ZPSM);
     let zbp = st(s, S_ZBP);
     if zte {
-        let dz = fb_read(zpsm, zbp, fbw, ux, uy);
+        let dz = read_pixel(zpsm, zbp, fbw, ux, uy);
         var ok = false;
         switch st(s, S_ZTST) {
             case 0u: {
@@ -728,10 +662,10 @@ fn plot(pr: u32, x: i32, y: i32, dx: i64, dy: i64) {
             msk = msk | select(0xFF000000u, 0x8000u, fpsm == PSMCT16 || fpsm == PSMCT16S);
         }
         out = (out & ~msk) | (dst & msk);
-        fb_store(fpsm, fbp, fbw, ux, uy, out);
+        store_pixel(fpsm, fbp, fbw, ux, uy, out);
     }
     if write_z && zte {
-        fb_store(zpsm, zbp, fbw, ux, uy, z);
+        store_pixel(zpsm, zbp, fbw, ux, uy, z);
     }
 }
 
@@ -744,12 +678,7 @@ fn draw_px(pr: u32, x: i32, y: i32) {
     let kind = u32(h[0].x);
     let dx = i64(x - h[2].x);
     let dy = i64(y - h[2].y);
-    g_fx = g_bfx;
-    g_fy = g_bfy;
     if kind == 1u || kind == 2u {
-        // Lines: every sub-pixel of a pixel on the line gets the line's step there.
-        g_fx = 0li;
-        g_fy = 0li;
         let l = prims[pr].lx;
         let n = prims[pr].misc.x;
         for (var i = 0li; i < n; i = i + 1li) {
@@ -764,23 +693,10 @@ fn draw_px(pr: u32, x: i32, y: i32) {
     if kind >= 3u && kind <= 5u {
         let X = i64(x);
         let Y = i64(y);
-        if g_hr {
-            // At the sub-pixel: the edge functions times 2S (the bias keeps the top-left rule).
-            let d = i64(2u * g_s);
-            let X2 = X * d + g_fx;
-            let Y2 = Y * d + g_fy;
-            for (var k = 0u; k < 3u; k = k + 1u) {
-                let e = prims[pr].e[k];
-                if e.x * d + e.z * Y2 + e.y * X2 + e.w < 0li {
-                    return;
-                }
-            }
-        } else {
-            for (var k = 0u; k < 3u; k = k + 1u) {
-                let e = prims[pr].e[k];
-                if e.x + e.z * Y + e.y * X + e.w < 0li {
-                    return;
-                }
+        for (var k = 0u; k < 3u; k = k + 1u) {
+            let e = prims[pr].e[k];
+            if e.x + e.z * Y + e.y * X + e.w < 0li {
+                return;
             }
         }
     }
@@ -796,133 +712,6 @@ fn raster(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) l
     for (var i = 0u; i < t.z; i = i + 1u) {
         draw_px(lists[t.y + i], x, y);
     }
-}
-
-// Drawing sub-pixel k at render scale P.d.w.
-fn hr_setup(k: u32) {
-    g_s = max(P.d.w, 1u);
-    g_hr = true;
-    g_k = k;
-    g_bfx = i64(2u * (k % g_s) + 1u) - i64(g_s);
-    g_bfy = i64(2u * (k / g_s) + 1u) - i64(g_s);
-}
-
-// `raster` for every sub-pixel (workgroup y = plane).
-@compute @workgroup_size(16, 16)
-fn raster_hr(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
-    hr_setup(wid.y);
-    let t = tiles[P.a.y + wid.x];
-    let x = i32((t.x & 0xFFFFu) * 16u + lid.x);
-    let y = i32((t.x >> 16u) * 16u + lid.y);
-    for (var i = 0u; i < t.z; i = i + 1u) {
-        draw_px(lists[t.y + i], x, y);
-    }
-}
-
-// `raster_serial` for every sub-pixel.
-@compute @workgroup_size(16, 16)
-fn raster_serial_hr(@builtin(local_invocation_id) lid: vec3<u32>) {
-    let s = max(P.d.w, 1u);
-    let first = P.a.z;
-    let count = P.a.w;
-    for (var i = 0u; i < count; i = i + 1u) {
-        let pr = first + i;
-        let h = prims[pr].h;
-        let tx0 = h[1].x >> 4u;
-        let ty0 = h[1].y >> 4u;
-        let tx1 = (h[1].z + 15) >> 4u;
-        let ty1 = (h[1].w + 15) >> 4u;
-        for (var ty = ty0; ty < ty1; ty = ty + 1) {
-            for (var tx = tx0; tx < tx1; tx = tx + 1) {
-                for (var k = 0u; k < s * s; k = k + 1u) {
-                    hr_setup(k);
-                    draw_px(pr, tx * 16 + i32(lid.x), ty * 16 + i32(lid.y));
-                }
-            }
-        }
-        storageBarrier();
-        workgroupBarrier();
-    }
-}
-
-// Render scale changed: every plane = local memory.
-@compute @workgroup_size(256)
-fn expand(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let w = gid.x;
-    if w >= HRW {
-        return;
-    }
-    let v = atomicLoad(&vram[w]);
-    let s = max(P.d.w, 1u);
-    for (var k = 0u; k < s * s; k = k + 1u) {
-        atomicStore(&hr[k * HRW + w], v);
-    }
-}
-
-// The display read-out at S times the resolution (gs::readout, from the planes): one thread per
-// output pixel. a: dispfb[0] lo / hi, dispfb[1] lo / hi; b: pmode, bgcolor, circuits (bit 0 /
-// 1) | halve << 2, output width; c: output height.
-fn hr_pixel(cidx: u32, X: u32, Y: u32, s: u32, halve: bool) -> vec4<u32> {
-    var lo = P.a.x;
-    var hi = P.a.y;
-    if cidx == 1u {
-        lo = P.a.z;
-        hi = P.a.w;
-    }
-    let fbp = (lo & 0x1FFu) * 32u;
-    let fbw = (lo >> 9u) & 0x3Fu;
-    let psm = (lo >> 15u) & 0x1Fu;
-    let dbx = hi & 0x7FFu;
-    let dby = (hi >> 11u) & 0x7FFu;
-    let sx = dbx * s + X;
-    var sy = dby * s + Y;
-    if halve {
-        sy = dby * s + Y / 2u;
-    }
-    g_tgt = 1u;
-    g_k = (sy % s) * s + (sx % s);
-    let raw = read_pixel(psm, fbp, fbw, (sx / s) & 2047u, (sy / s) & 2047u);
-    g_tgt = 0u;
-    if psm == PSMCT16 || psm == PSMCT16S {
-        return vec4<u32>((raw & 31u) << 3u, ((raw >> 5u) & 31u) << 3u, ((raw >> 10u) & 31u) << 3u, select(0u, 0x80u, (raw & 0x8000u) != 0u));
-    }
-    return unpack(raw);
-}
-
-@compute @workgroup_size(256)
-fn readout_hr(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let ow = P.b.w;
-    let oh = P.c.x;
-    let i = gid.x;
-    if i >= ow * oh {
-        return;
-    }
-    let s = max(P.d.w, 1u);
-    let X = i % ow;
-    let Y = i / ow;
-    let pmode = P.b.x;
-    let bg = P.b.y;
-    let circ = P.b.z & 3u;
-    let halve = (P.b.z & 4u) != 0u;
-    var px = vec3<u32>(bg & 0xFFu, (bg >> 8u) & 0xFFu, (bg >> 16u) & 0xFFu);
-    // Circuit 2 is the bottom layer, circuit 1 blends over it (MMOD / ALP).
-    if (circ & 2u) != 0u {
-        let c = hr_pixel(1u, X, Y, s, halve);
-        px = c.xyz;
-    }
-    if (circ & 1u) != 0u {
-        let c = hr_pixel(0u, X, Y, s, halve);
-        if circ == 3u {
-            var alpha = min(c.w * 2u, 255u);
-            if (pmode & 0x20u) != 0u {
-                alpha = (pmode >> 8u) & 0xFFu;
-            }
-            px = (c.xyz * alpha + px * (255u - alpha)) / 255u;
-        } else {
-            px = c.xyz;
-        }
-    }
-    outb[i] = px.x | (px.y << 8u) | (px.z << 16u) | 0xFF000000u;
 }
 
 // Frame and depth buffer overlap: one workgroup, primitive by primitive.
@@ -953,8 +742,6 @@ fn raster_serial(@builtin(local_invocation_id) lid: vec3<u32>) {
 // a: dbp, dbw, dpsm, bits; b: dsax, dsay, rrw, rrh; c: x, y, data word offset, pixels.
 @compute @workgroup_size(256)
 fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
-    g_s = max(P.d.w, 1u);
-    g_rep = g_s > 1u;
     let k = gid.x;
     if k >= P.c.w {
         return;
@@ -995,23 +782,9 @@ fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Local -> local (gs::Gs::local_to_local).
 // a: sbp, sbw, spsm, dir; b: dbp, dbw, dpsm, serial; c: sx, sy, dx, dy; d: rrw, rrh.
-fn copy_px1(x: u32, y: u32) {
+fn copy_px(x: u32, y: u32) {
     let v = read_pixel(P.a.z, P.a.x, P.a.y, (P.c.x + x) & 2047u, (P.c.y + y) & 2047u);
     store_pixel(P.b.z, P.b.x, P.b.y, (P.c.z + x) & 2047u, (P.c.w + y) & 2047u, v);
-}
-
-// Local memory, then (render scale > 1) every plane the same way.
-fn copy_px(x: u32, y: u32) {
-    copy_px1(x, y);
-    let s = max(P.d.w, 1u);
-    if s > 1u {
-        for (var k = 0u; k < s * s; k = k + 1u) {
-            g_tgt = 1u;
-            g_k = k;
-            copy_px1(x, y);
-        }
-        g_tgt = 0u;
-    }
 }
 
 @compute @workgroup_size(256)

@@ -16,17 +16,6 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 pub const SAMPLE_RATE: u32 = 48_000;
-
-/// Front-end volume of the streamed music (the auto-DMA PCM input, also the movies' sound) and
-/// of the sound effects (the voices), f32 bits (1.0 = as the console mixes it). Not 1:1: an
-/// option of the front end.
-pub static MUSIC_VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
-pub static SFX_VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3F80_0000);
-
-/// A volume as a Q12 gain.
-fn gain(v: &std::sync::atomic::AtomicU32) -> i32 {
-    (f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed)).clamp(0.0, 2.0) * 4096.0) as i32
-}
 const RAM: usize = 2 << 20;
 const POS: [i32; 5] = [0, 60, 115, 98, 122];
 const NEG: [i32; 5] = [0, 0, -52, -55, -60];
@@ -743,8 +732,6 @@ impl Spu2 {
                 self.decode_block(core, n);
             }
         }
-        let sfx = gain(&SFX_VOLUME);
-        let (l, r, wl, wr) = if sfx == 4096 { (l, r, wl, wr) } else { ((l * sfx) >> 12, (r * sfx) >> 12, (wl * sfx) >> 12, (wr * sfx) >> 12) };
         let (l, r) = (clamp_mix(l), clamp_mix(r));
         let (wl, wr) = (clamp_mix(wl), clamp_mix(wr));
         let base = 0x760 + 0x28 * core as u32;
@@ -754,10 +741,6 @@ impl Spu2 {
         if self.admas(core) || !self.stream[core].is_empty() {
             let (sl, sr) = self.stream[core].pop_front().unwrap_or((0, 0));
             inp = ((sl as i32 * vreg(self, 0xC)) >> 15, (sr as i32 * vreg(self, 0xE)) >> 15);
-            let music = gain(&MUSIC_VOLUME);
-            if music != 4096 {
-                inp = ((inp.0 * music) >> 12, (inp.1 * music) >> 12);
-            }
         }
         let mmix = self.reg(core, 0x198);
         let g = |bit: u32, v: i32| if mmix as u32 & bit != 0 { v } else { 0 };

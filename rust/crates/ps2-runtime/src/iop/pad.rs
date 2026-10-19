@@ -102,8 +102,7 @@ pub fn update(m: &mut Machine) {
         m.iop.pad.ports[n].frame = frame;
         let shared = &m.shared.pad;
         let blocked = n == 0 && crate::pad::BLOCK.load(Relaxed);
-        let mask = if n == 0 { crate::pad::MASK.load(Relaxed) as u32 } else { 0 };
-        let buttons = if blocked { 0 } else { shared.buttons[n].load(Relaxed) as u32 & !mask };
+        let buttons = if blocked { 0 } else { shared.buttons[n].load(Relaxed) as u32 };
         let sticks = if blocked { 0 } else { shared.sticks[n].load(Relaxed) };
         let connected = shared.connected[n].load(Relaxed);
         let mut rec = [0u8; 0x80];
