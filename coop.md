@@ -74,6 +74,43 @@ das Spiel liest beide Ports jeden Frame über 0x1024F8 → 0x101FC0).
   Ansicht); das Fenster setzt links Spieler 1, rechts Spieler 2 zusammen (je die Bildmitte).
   `T5_DW_SPLIT_LAG=n` verschiebt die Zuordnung um n Bilder (0 passt, Nutzertest).
 
+Nach dem ersten Nutzertest (Kameras träge, Laufen komisch, Räume/Gegner nur bei Spieler 1, Sound
+komisch) gebaut, **noch nicht getestet**:
+
+- **Ansicht = Datenblock + Kamera-Task-Felder** (`View`): Matrix/Position +0x60..+0x9F
+  (0x153BB0) und Zelle +0xEC/+0xF0. Das Kamera-Update ruft 0x123480, das die Zelle der Kamera aus
+  ihrer Position sucht, **ausgehend von der bisherigen** (0x129138); mit einer Zelle für beide
+  Ansichten blieb sie bei Spieler 1 → Räume bei Spieler 2 wurden nicht gezeichnet.
+- **Träge Kameras:** Am Bildanfang (Thread-Haken 0x20F110, neu `kernel::request_thread_native`
+  für Rust-Code im Spiel-Thread) wird die versteckte Ansicht eingesetzt, mit 0x154190
+  weitergerechnet und wieder ausgetauscht – jede Kamera bewegt sich jedes Bild.
+- **Laufen:** Das Spiel addiert den Kamerawinkel (Datenblock +0xA4, 0x10000 = Vollkreis) zum
+  Stickwinkel; der läuft **im Uhrzeigersinn** (0x15C6A0 mit 0x21F2F8: oben 0x8000, rechts
+  −0x4000). Die Laufzeit dreht den linken Stick je Port (`pad::TURN`, in der IOP-Pad-Ausgabe)
+  um aktiven Winkel − eigenen Winkel gegen den Uhrzeigersinn. Der erste Versuch drehte falsch
+  herum (richtig nur jedes zweite Bild).
+- **„Der Spieler“** des Spiels (ManMgr-Eintrag +0, 0x147A98) wechselt mit der Kamera: Spieler 2 in
+  seinen Bildern → **eigenes HUD für Spieler 2 (Nutzertest: funktioniert)**, Raumskripte
+  (Seriennummer 0x147AF0) sehen beide. `player()` der Mod liefert weiter Spieler 1
+  (`SPLIT_PLAYER1`).
+- **Gegner-Ziel** = Figurdaten **+0x3030** (Seriennummer, −1 keins; +0x302C Modus), gesetzt von
+  den Raumskripten (0x16C168/0x16C188 über 0x199578/0x199598) mit „dem Spieler“ zur Zeit des
+  Skripts. Die Mod gibt jedem Gegner, dessen Ziel ein Spieler ist, den näheren (Wechsel erst ab
+  300 Einheiten Vorsprung, `retarget_enemies`; auch ohne Splitscreen).
+- **Sound:** Das Kamera-Update setzt auch den 3D-Hörer (0x153BB0 → 0x101670 → 0x1335D8 →
+  nuSound3D 0x253590; Hörer 0x69B3C0..+0x30, Kopie 0x429A20..+0x3C, Eintrag [0x41EF0C]). Beim
+  zusätzlichen Update von Spieler 2s Kamera wird er gesichert und zurückgesetzt, so steht er am
+  Bildanfang immer auf Spieler 1. In Spieler 2s Bildern setzt ihn das Spiel-Update noch auf
+  Spieler 2 (Reihenfolge Kamera/Sound im Bild unbekannt) – Test nötig.
+- **16:9:** Fenster 1600×900 bei `T5_DW_SPLIT`; jede Hälfte = mittlere **2/3** des Spielbilds
+  (8:9 bei 4:3, nichts gestreckt). Beide Kameras im Splitscreen um **1,35** zurückgezogen
+  (Abstand/Höhen +0x10/+0x0C/+0x20 je Ansicht, Spielwerte gemerkt, `split_zoom`); die
+  Boss-Kamera-Skalierung pausiert solange.
+- **Befund für später:** Die Engine kann mehrere Ansichten nativ (Anzahl [0x2ACD38], 0x101590,
+  bis 4; Ansichtsblöcke 0x2ACDD0 + i×0x1B0; Renderschleife 0x100E70 zeichnet die Szene je
+  Ansicht, HUD danach einmal). Damit wären beide Kameras im selben Bild mit 60 fps möglich statt
+  abwechselnd – offen: Zellen/HUD je Ansicht, Leistung.
+
 ## Testen
 
 Skript-Eingaben (`t5-headless` und Fenster `t5-bevy`): `--press P2:BUTTON@SEKUNDE[+HALTEN]`
@@ -102,7 +139,7 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
 | SELECT-Sprung | **funktioniert** | Bild: Spieler 2 neben Spieler 1 |
 | Verlassen / Wiedereinstieg | **funktioniert** | „Player 2 left“, Task-Kill 0x20B428, neuer Beitritt 0xf9b800 |
 | Friendly Fire | gebaut, Treffer zwischen den Spielern ungetestet | – |
-| Splitscreen-Prototyp (`T5_DW_SPLIT=1`) | **geteiltes Bild, Seiten richtig** (Nutzertest 26.10.); Kameras träge, Laufrichtung komisch, kein HUD für Spieler 2, nur Bildmitte je Hälfte | Nutzer |
+| Splitscreen-Prototyp (`T5_DW_SPLIT=1`) | **geteiltes Bild, Seiten richtig, HUD für Spieler 2** (Nutzertests 26.10.); Laufen, träge Kameras, Räume/Gegner bei Spieler 2, Sound, 16:9 nachgebessert, ungetestet | Nutzer |
 | Spieltest im Fenster (Nutzer = Spieler 2, F4/`T5_PAD_P2`) | Beitritt im Fenster geklappt (Log 26.10.) | Log |
 
 ## Offen / bekannte Grenzen
@@ -119,9 +156,8 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
   60), das Fenster setzt die Hälften zusammen; online schickt der Host die Ansicht von Spieler 2
   als Bild-Stream, der Gast seine Eingaben. Befund: Die Kamera ist ein Einzelstück
   ([0x41BD10], 0x154308 legt keine zweite an), Update 0x154190 → 0x153BB0.
-- **HUD** zeigt nur Spieler 1. Lebensleiste für Spieler 2 fehlt (Overlay wäre möglich).
-- **Gegner** zielen auf Spieler 1 (Gegner-Ziel = ManMgr-Eintrag); Spieler 2 wird nur nebenbei
-  getroffen. Ob Gegner Spieler 2 angreifen, ist ungetestet.
+- **HUD** ohne Splitscreen nur für Spieler 1 (mit Splitscreen hat Spieler 2 seins).
+- **Gegner**: Ziel = näherer Spieler (siehe Splitscreen), ungetestet.
 - **Raumwechsel / Stage-Wechsel:** ob die Figur von Spieler 2 dabei entfernt wird, ist ungetestet;
   dann einfach wieder START.
 - Der Tod von Spieler 2 zählt für das Spiel wie ein besiegter Gegner (mögliche Item-Drops).

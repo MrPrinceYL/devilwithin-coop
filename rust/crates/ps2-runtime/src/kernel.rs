@@ -677,11 +677,23 @@ pub fn request_thread_call(func: u32, args: &[u64]) {
     }
 }
 
+/// Mod code to run in thread context at the next call of `THREAD_HOOK`, after the queued guest
+/// calls (it may call guest functions itself, `Ctx::call_guest`).
+pub type NativeCall = Box<dyn FnOnce(&mut Ctx) + Send>;
+static THREAD_NATIVE: std::sync::Mutex<Vec<NativeCall>> = std::sync::Mutex::new(Vec::new());
+
+pub fn request_thread_native(f: NativeCall) {
+    if let Ok(mut q) = THREAD_NATIVE.lock() {
+        q.push(f);
+    }
+}
+
 /// From the dispatcher, before the hook function runs: the queued calls, with the caller's
 /// registers saved and restored around them.
 pub fn run_thread_calls(c: &mut Ctx) {
     let calls: Vec<(u32, Vec<u64>)> = THREAD_CALLS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-    if calls.is_empty() {
+    let natives: Vec<NativeCall> = THREAD_NATIVE.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
+    if calls.is_empty() && natives.is_empty() {
         return;
     }
     let saved = Saved { regs: Box::new(c.regs), next: c.next, depth: c.depth, bypass: c.bypass, abort: c.abort };
@@ -693,6 +705,11 @@ pub fn run_thread_calls(c: &mut Ctx) {
         let v0 = c.call_guest(f, &args);
         prev = v0;
         diag::log(format!("thread call {f:#x}({args:x?}) -> {v0:#x}"));
+    }
+    for f in natives {
+        c.next = 0;
+        c.bypass = 0;
+        f(c);
     }
     c.regs.copy_from_slice(&saved.regs[..]);
     c.next = saved.next;

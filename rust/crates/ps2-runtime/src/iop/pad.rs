@@ -103,7 +103,7 @@ pub fn update(m: &mut Machine) {
         let shared = &m.shared.pad;
         let blocked = n == 0 && crate::pad::BLOCK.load(Relaxed);
         let buttons = if blocked { 0 } else { shared.buttons[n].load(Relaxed) as u32 };
-        let sticks = if blocked { 0 } else { shared.sticks[n].load(Relaxed) };
+        let sticks = if blocked { 0 } else { crate::pad::turn_left_stick(shared.sticks[n].load(Relaxed), crate::pad::TURN[n].load(Relaxed)) };
         let connected = shared.connected[n].load(Relaxed);
         let mut rec = [0u8; 0x80];
         let mode = p.mode_id;

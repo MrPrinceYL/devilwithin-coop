@@ -352,15 +352,36 @@ fn camera_data(m: &Machine, task: u32) -> u32 {
 /// RAM 18.10.: 4500 / 1000 / 1000 in Lab A, +0x38 = their length).
 const CAM_FIELDS: [u32; 3] = [0x10, 0x0C, 0x20];
 
-/// Pull the cameras that follow `man` back for big characters: profile +0x20 is 100 for Jin and
-/// the soldiers, 250-500 for the bosses (their body size); factor 1 + (size - 100) / 150. The
-/// game's values are kept (`bases`, per camera) and taken anew whenever the game changes them.
-/// The game still shortens the camera at walls (+0x38 current length < +0x3C wanted, recomputed
-/// every frame): in small rooms a very big character (True Ogre) stays close.
-fn scale_cameras(m: &mut Machine, man: u32, bases: &mut std::collections::HashMap<u32, ([f32; 3], [f32; 3])>) {
+/// Height of a character as the game measures it (0x14A1F0: character data +0x390, top +8 minus
+/// bottom +0x1C); 0 when unknown.
+fn char_height(m: &Machine, man: u32) -> f32 {
+    let cd = char_data(m, man);
+    if cd == 0 {
+        return 0.0;
+    }
+    let h = f32::from_bits(word(m, cd + 0x398)) - f32::from_bits(word(m, cd + 0x3AC));
+    if h.is_finite() && h > 0.0 { h } else { 0.0 }
+}
+
+/// Pull the cameras that follow `man` back for characters taller than Jin: factor = their height
+/// / Jin's (both the largest seen, so crouching or animations do not move the camera; Jin's is
+/// measured while Jin is played, `heights`). Profile +0x20 is no size (Heihachi, a human, has
+/// 400) and pulled human-sized bosses far back (user, 26.10.). The game's values are kept
+/// (`bases`, per camera) and taken anew whenever the game changes them. The game still shortens
+/// the camera at walls (+0x38 current length < +0x3C wanted, recomputed every frame): in small
+/// rooms a very big character (True Ogre) stays close.
+fn scale_cameras(m: &mut Machine, man: u32, bases: &mut std::collections::HashMap<u32, ([f32; 3], [f32; 3])>, heights: &mut (f32, u32, f32)) {
     let id = half(m, man + 0x160) as u16 as u32;
-    let size = profiles(m).iter().find(|p| p.0 == id).map(|p| word(m, p.1 + 0x20)).unwrap_or(100);
-    let factor = 1.0 + (size.clamp(100, 1000) as f32 - 100.0) / 150.0;
+    let h = char_height(m, man);
+    if id == JIN {
+        heights.0 = heights.0.max(h);
+    }
+    if heights.1 != man {
+        ps2_runtime::diag::log(format!("camera: playing profile {id:#x} (height {h:.0}, Jin {:.0})", heights.0));
+        *heights = (heights.0, man, 0.0);
+    }
+    heights.2 = heights.2.max(h);
+    let factor = if heights.0 > 0.0 { (heights.2 / heights.0).clamp(1.0, 4.0) } else { 1.0 };
     let mut t = word(m, TASK_POOL + 8);
     for _ in 0..1024 {
         if t == 0 {
@@ -495,8 +516,17 @@ fn name(m: &Machine, t: u32) -> String {
     format!("{prof} ({ai})")
 }
 
-/// The player character: the ManMgr entry if it is a living man, else the man on pad 1.
+/// Split screen: player 1 while the ManMgr entry alternates between the players (split_swap);
+/// 0 otherwise.
+static SPLIT_PLAYER1: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The player character: the ManMgr entry if it is a living man, else the man on pad 1 (with
+/// split screen player 1, whom the entry holds every other picture).
 fn player(m: &Machine) -> u32 {
+    let p1 = SPLIT_PLAYER1.load(std::sync::atomic::Ordering::Relaxed);
+    if p1 != 0 && alive(m, p1) {
+        return p1;
+    }
     let slot = player_slot(m);
     let p = if slot != 0 { word(m, slot) } else { 0 };
     if p != 0 && alive(m, p) {
@@ -720,6 +750,8 @@ struct State {
     become_hero: Option<u32>,
     /// Camera fields as the game set them / as the mod wrote them (scale_cameras).
     cam_bases: std::collections::HashMap<u32, ([f32; 3], [f32; 3])>,
+    /// scale_cameras: (Jin's height, played character, its height), the largest seen.
+    cam_heights: (f32, u32, f32),
     /// No-clip: the position the mod holds the character in control at.
     noclip: Option<[f32; 3]>,
     /// Index into ITEMS.
@@ -758,7 +790,6 @@ struct State {
     coop_prev: u16,
     /// Split screen prototype (T5_DW_SPLIT=1): the camera data block of the view not shown this
     /// frame, and which view the game's camera holds now (0 = player 1).
-    split_cam: Option<Vec<u8>>,
     split_view: u8,
     /// Game pictures at the last camera switch (raster::RENDERED_TOTAL; Devil Within copies each
     /// finished picture onto the displayed buffer instead of flipping, so the flip count stays 1).
@@ -1186,12 +1217,142 @@ fn pad_as_game(m: &Machine, port: usize) -> (u32, [u32; 4]) {
 /// 0x42B6B4 (stride [0x42B6A8]).
 const CAMERA: u32 = 0x0041_BD10;
 
-/// Split screen prototype: whenever the game has finished a new picture, the game's
-/// camera data block is swapped with the other view's (the second one starts as a copy aimed at
-/// player 2), so the pictures alternate between the players' cameras; each camera advances every
-/// other picture. The picture just shown is tagged with the camera that drew it (plus
-/// T5_DW_SPLIT_LAG pictures of delay, to be found by watching), the window puts the two side by
-/// side.
+/// Camera task fields that belong to a view: matrix and position (+0x60..+0x9F, 0x153BB0) and
+/// the cell the camera is in (+0xEC/+0xF0; 0x123480 looks for it from the previous one: with one
+/// cell for both views it stayed near player 1 and rooms near player 2 were not drawn).
+const CAM_TASK_FIELDS: [(u32, u32); 2] = [(0x60, 0x40), (0xEC, 8)];
+
+/// The camera state of one view: its data block and its camera task fields.
+struct View {
+    data: Vec<u8>,
+    task: Vec<u8>,
+}
+
+/// Split screen pulls both cameras back (each half shows two thirds of the picture's width;
+/// user: "ohne dass die Kamera zu nah erscheint").
+const SPLIT_ZOOM: f32 = 1.35;
+/// Per player: the camera's distance and heights (CAM_FIELDS) as the game set them and as the
+/// mod wrote them.
+static SPLIT_ZOOM_BASE: Mutex<[Option<([f32; 3], [f32; 3])>; 2]> = Mutex::new([None, None]);
+
+/// Pull player `who`'s view back (`v`, about to go into the game): the game's values times
+/// SPLIT_ZOOM, taken anew when the game changed them.
+fn split_zoom(v: &mut View, who: usize) {
+    let get = |d: &[u8], o: u32| f32::from_le_bytes(d[o as usize..o as usize + 4].try_into().unwrap());
+    let now = CAM_FIELDS.map(|o| get(&v.data, o));
+    let mut g = SPLIT_ZOOM_BASE.lock().unwrap();
+    let (base, written) = g[who].get_or_insert((now, now));
+    if now != *written {
+        *base = now;
+    }
+    let want = base.map(|x| x * SPLIT_ZOOM);
+    for (o, x) in CAM_FIELDS.iter().zip(want) {
+        v.data[*o as usize..*o as usize + 4].copy_from_slice(&x.to_le_bytes());
+    }
+    *written = want;
+}
+
+/// The game's values back in player `who`'s view (split screen ends).
+fn split_unzoom(v: &mut View, who: usize) {
+    let mut g = SPLIT_ZOOM_BASE.lock().unwrap();
+    if let Some((base, written)) = g[who].take() {
+        let get = |d: &[u8], o: u32| f32::from_le_bytes(d[o as usize..o as usize + 4].try_into().unwrap());
+        if CAM_FIELDS.map(|o| get(&v.data, o)) == written {
+            for (o, x) in CAM_FIELDS.iter().zip(base) {
+                v.data[*o as usize..*o as usize + 4].copy_from_slice(&x.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// The view the game's camera does not hold now (split screen); shared with the frame-start
+/// update (`split_advance_hidden`).
+static SPLIT_HIDDEN: Mutex<Option<View>> = Mutex::new(None);
+/// The player whose view the game's camera holds now (st.split_view, for the frame-start update).
+static SPLIT_HELD: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// A frame-start update is queued and has not run yet.
+static SPLIT_ADVANCE_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Read the camera view at task `task` / data block `data` (`size` bytes) through `get`.
+fn view_read(get: &mut dyn FnMut(u32) -> u8, task: u32, data: u32, size: u32) -> View {
+    let data_bytes = (0..size).map(|i| get(data + i)).collect();
+    let mut task_bytes = Vec::new();
+    for &(o, n) in &CAM_TASK_FIELDS {
+        for i in 0..n {
+            task_bytes.push(get(task + o + i));
+        }
+    }
+    View { data: data_bytes, task: task_bytes }
+}
+
+fn view_write(set: &mut dyn FnMut(u32, u8), task: u32, data: u32, v: &View) {
+    for (i, b) in v.data.iter().enumerate() {
+        set(data + i as u32, *b);
+    }
+    let mut k = 0;
+    for &(o, n) in &CAM_TASK_FIELDS {
+        for i in 0..n {
+            set(task + o + i, v.task[k]);
+            k += 1;
+        }
+    }
+}
+
+/// The camera task, its data block and the block size, if all are there.
+fn camera_parts(word: &mut dyn FnMut(u32) -> u32) -> Option<(u32, u32, u32)> {
+    let task = word(CAMERA);
+    let size = word(0x0042_B6A8);
+    let i = if task != 0 { word(task + 0x140) as i32 } else { -1 };
+    if i < 0 || !(0x100..=0x1000).contains(&size) {
+        return None;
+    }
+    let pool = word(0x0042_B6B4);
+    let data = word(pool).wrapping_add(size.wrapping_mul(i as u32));
+    (data != 0).then_some((task, data, size))
+}
+
+/// At the start of a frame (thread context): the hidden view advances too (camera task update
+/// 0x154190 with its state put in and taken out again), so both cameras move every frame
+/// instead of every other one (user: cameras sluggish).
+fn split_advance_hidden(c: &mut ps2_runtime::Ctx) {
+    SPLIT_ADVANCE_QUEUED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let Ok(mut g) = SPLIT_HIDDEN.lock() else { return };
+    let Some(hidden) = g.as_mut() else { return };
+    let who = 1 - SPLIT_HELD.load(std::sync::atomic::Ordering::Relaxed) as usize;
+    split_zoom(hidden, who);
+    let Some((task, data, size)) = camera_parts(&mut |a| c.ld(a, 4) as u32) else { return };
+    if hidden.data.len() != size as usize {
+        return;
+    }
+    let shown = view_read(&mut |a| c.ld(a, 1) as u8, task, data, size);
+    view_write(&mut |a, b| c.st(a, 1, b as u64), task, data, hidden);
+    // The camera update also places the 3D sound listener (0x153BB0 -> 0x101670 -> 0x1335D8 ->
+    // nuSound3D 0x253590); player 2's camera must not move it.
+    let listener: Vec<(u32, u8)> = if who == 1 {
+        let entry = c.ld(LISTENER_ENTRY, 4) as u32;
+        LISTENER.iter().chain([(entry, 12)].iter().filter(|_| entry != 0)).flat_map(|&(a, n)| a..a + n).map(|a| (a, c.ld(a, 1) as u8)).collect()
+    } else {
+        Vec::new()
+    };
+    c.call_guest(0x0015_4190, &[task as u64]);
+    for (a, b) in listener {
+        c.st(a, 1, b as u64);
+    }
+    *hidden = view_read(&mut |a| c.ld(a, 1) as u8, task, data, size);
+    view_write(&mut |a, b| c.st(a, 1, b as u64), task, data, &shown);
+}
+
+/// The 3D sound listener: nuSound3D's (0x69B3C0, set by 0x253590) and the game's copy
+/// (0x429A20, 0x1335D8), plus the 12 bytes of the entry [0x41EF0C] points at.
+const LISTENER: [(u32, u32); 2] = [(0x0069_B3C0, 0x30), (0x0042_9A20, 0x3C)];
+const LISTENER_ENTRY: u32 = 0x0041_EF0C;
+
+/// Split screen: whenever the game has finished a new picture, the game's camera (data block
+/// and camera task fields, `View`) is swapped with the other view's (the second one starts as
+/// a copy aimed at player 2), so the pictures alternate between the players' cameras; the hidden
+/// one advances at the next frame start. The picture just shown is tagged with the camera that
+/// drew it (plus T5_DW_SPLIT_LAG pictures of delay; 0 fits, user test), the window puts the two
+/// side by side.
 fn split_swap(m: &mut Machine, st: &mut State, p2: u32) {
     let pictures = ps2_runtime::raster::RENDERED_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
     if pictures == st.split_flip {
@@ -1209,42 +1370,111 @@ fn split_swap(m: &mut Machine, st: &mut State, p2: u32) {
     let shown = st.split_hist.front().copied().unwrap_or(0);
     ps2_runtime::SPLIT_VIEW.store(shown, std::sync::atomic::Ordering::Relaxed);
     ps2_runtime::SPLIT_ON.store(true, std::sync::atomic::Ordering::Relaxed);
-    let cam = word(m, CAMERA);
-    let c = if cam != 0 { camera_data(m, cam) } else { 0 };
-    let size = word(m, 0x0042_B6A8);
-    if c == 0 || !(0x100..=0x1000).contains(&size) {
-        st.split_cam = None;
+    let Some((task, data, size)) = camera_parts(&mut |a| word(m, a)) else {
+        *SPLIT_HIDDEN.lock().unwrap() = None;
         return;
-    }
-    let now: Vec<u8> = (0..size).map(|i| ram_read(m, c + i, 1) as u8).collect();
-    let other = st.split_cam.take().unwrap_or_else(|| {
-        let mut o = now.clone();
-        o[0xF0..0xF4].copy_from_slice(&p2.to_le_bytes());
-        o[0xF4..0xF8].copy_from_slice(&word(m, p2).to_le_bytes());
-        o
-    });
-    for (i, b) in other.iter().enumerate() {
-        ram_write(m, c + i as u32, 1, *b as u64);
-    }
-    st.split_cam = Some(now);
+    };
+    let now = view_read(&mut |a| ram_read(m, a, 1) as u8, task, data, size);
+    let mut g = SPLIT_HIDDEN.lock().unwrap();
+    let mut other = match g.take() {
+        Some(v) if v.data.len() == size as usize => v,
+        _ => {
+            let mut o = View { data: now.data.clone(), task: now.task.clone() };
+            o.data[0xF0..0xF4].copy_from_slice(&p2.to_le_bytes());
+            o.data[0xF4..0xF8].copy_from_slice(&word(m, p2).to_le_bytes());
+            o
+        }
+    };
+    split_zoom(&mut other, (st.split_view ^ 1) as usize);
+    view_write(&mut |a, b| ram_write(m, a, 1, b as u64), task, data, &other);
+    let yaw = |b: &[u8]| i16::from_le_bytes([b[0xA4], b[0xA5]]) as i32;
+    let (active, hidden) = (yaw(&other.data), yaw(&now.data));
+    *g = Some(now);
+    drop(g);
     st.split_view ^= 1;
-}
-
-/// Split screen off: player 1's camera back in the game, the window shows the whole picture.
-fn split_off(m: &mut Machine, st: &mut State) {
-    if let Some(other) = st.split_cam.take() {
-        let cam = word(m, CAMERA);
-        let c = if cam != 0 { camera_data(m, cam) } else { 0 };
-        if st.split_view == 1 && c != 0 && other.len() == word(m, 0x0042_B6A8) as usize {
-            for (i, b) in other.iter().enumerate() {
-                ram_write(m, c + i as u32, 1, *b as u64);
-            }
+    SPLIT_HELD.store(st.split_view, std::sync::atomic::Ordering::Relaxed);
+    if !SPLIT_ADVANCE_QUEUED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        ps2_runtime::kernel::request_thread_native(Box::new(split_advance_hidden));
+    }
+    // The game's one player (0x147A98: the HUD; enemies spawned and attacking) follows the
+    // camera: player 2 in player 2's pictures.
+    let slot = player_slot(m);
+    if slot != 0 {
+        let cur = word(m, slot);
+        if cur != p2 && cur != 0 {
+            SPLIT_PLAYER1.store(cur, std::sync::atomic::Ordering::Relaxed);
+        }
+        let p1 = SPLIT_PLAYER1.load(std::sync::atomic::Ordering::Relaxed);
+        if p1 != 0 {
+            ram_write(m, slot, 4, if st.split_view == 1 { p2 } else { p1 } as u64);
         }
     }
+    // Steering: the game adds the yaw of the camera it now holds (+0xA4) to each stick's angle;
+    // that angle runs clockwise (0x15C6A0 with 0x21F2F8: stick up 0x8000, right -0x4000), so a
+    // player's stick turns counter-clockwise by the active yaw minus their own camera's.
+    let (p1_yaw, p2_yaw) = if st.split_view == 0 { (active, hidden) } else { (hidden, active) };
+    let p1_port = (ram_read(m, PAD1_PORT, 1) & 1) as usize;
+    let turn = |own: i32| ((active - own) as i16) as i32;
+    ps2_runtime::pad::TURN[p1_port].store(turn(p1_yaw), std::sync::atomic::Ordering::Relaxed);
+    ps2_runtime::pad::TURN[p1_port ^ 1].store(turn(p2_yaw), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Split screen off: player 1's camera back in the game (and player 1 the game's player), the
+/// window shows the whole picture.
+fn split_off(m: &mut Machine, st: &mut State) {
+    if !ps2_runtime::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed) && SPLIT_HIDDEN.lock().unwrap().is_none() {
+        return;
+    }
+    let p1 = SPLIT_PLAYER1.swap(0, std::sync::atomic::Ordering::Relaxed);
+    let slot = player_slot(m);
+    if p1 != 0 && slot != 0 && alive(m, p1) {
+        ram_write(m, slot, 4, p1 as u64);
+    }
+    let hidden = SPLIT_HIDDEN.lock().unwrap().take();
+    if let Some((task, data, size)) = camera_parts(&mut |a| word(m, a)) {
+        // Player 1's view back in the game, with the game's distance.
+        let mut v = match hidden {
+            Some(v) if st.split_view == 1 && v.data.len() == size as usize => v,
+            _ => view_read(&mut |a| ram_read(m, a, 1) as u8, task, data, size),
+        };
+        split_unzoom(&mut v, 0);
+        view_write(&mut |a, b| ram_write(m, a, 1, b as u64), task, data, &v);
+    }
+    SPLIT_ZOOM_BASE.lock().unwrap()[1] = None;
     st.split_view = 0;
+    SPLIT_HELD.store(0, std::sync::atomic::Ordering::Relaxed);
     st.split_hist.clear();
+    for t in &ps2_runtime::pad::TURN {
+        t.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
     ps2_runtime::SPLIT_ON.store(false, std::sync::atomic::Ordering::Relaxed);
     ps2_runtime::SPLIT_VIEW.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Enemies go for the nearer player: a character's target (character data +0x3030, a task
+/// serial, -1 none; set by the room scripts, 0x16C168/0x16C188, from "the player" at the time)
+/// that is one of the players becomes the other one when that is clearly nearer. Targets that
+/// are no player (script business) stay.
+fn retarget_enemies(m: &mut Machine, players: &[u32]) {
+    let serials: Vec<u32> = players.iter().map(|&p| word(m, p)).collect();
+    let pos: Vec<[f32; 3]> = players.iter().map(|&p| position(m, p).map(f32::from_bits)).collect();
+    let dist2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2);
+    for c in characters(m) {
+        if players.contains(&c) {
+            continue;
+        }
+        let d = char_data(m, c);
+        if d == 0 {
+            continue;
+        }
+        let Some(now) = serials.iter().position(|&s| s == word(m, d + 0x3030)) else { continue };
+        let here = position(m, c).map(f32::from_bits);
+        let best = (0..players.len()).min_by(|&a, &b| dist2(here, pos[a]).total_cmp(&dist2(here, pos[b]))).unwrap_or(now);
+        // Switch only when the other player is nearer by more than 300 units.
+        if best != now && dist2(here, pos[best]).sqrt() + 300.0 < dist2(here, pos[now]).sqrt() {
+            ram_write(m, d + 0x3030, 4, serials[best] as u64);
+        }
+    }
 }
 
 /// Every vertical blank: player 2 joins with START on the other port (a Jin next to player 1,
@@ -1295,6 +1525,9 @@ fn coop_update(m: &mut Machine, st: &mut State, playing: bool) {
         _ => split_off(m, st),
     }
     let Some(t) = st.coop else { return };
+    if playing && p1 != 0 && p1 != t {
+        retarget_enemies(m, &[p1, t]);
+    }
     // Player 1's team (the game gives a created man its profile's afterwards); with friendly
     // fire the first team nobody else has, so both players and the enemies hit each other.
     let (d1, d2) = (if p1 != 0 { char_data(m, p1) } else { 0 }, char_data(m, t));
@@ -1496,6 +1729,7 @@ pub fn update(m: &mut Machine, out: &mut String) {
         hero_team: 0,
         become_hero: None,
         cam_bases: std::collections::HashMap::new(),
+        cam_heights: (0.0, 0, 0.0),
         stage: 0,
         item: 0,
         object: 0,
@@ -1514,7 +1748,6 @@ pub fn update(m: &mut Machine, out: &mut String) {
         coop: None,
         coop_join: false,
         coop_prev: 0,
-        split_cam: None,
         split_view: 0,
         split_flip: 0,
         split_hist: std::collections::VecDeque::new(),
@@ -1543,10 +1776,13 @@ pub fn update(m: &mut Machine, out: &mut String) {
     }
     // Unlimited health / devil gauge for the character in control.
     let p = player(m);
-    if p != 0 {
+    // (Split screen sets the camera distance per view itself, split_zoom.)
+    if p != 0 && !ps2_runtime::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed) {
         let mut bases = std::mem::take(&mut st.cam_bases);
-        scale_cameras(m, p, &mut bases);
+        let mut heights = st.cam_heights;
+        scale_cameras(m, p, &mut bases, &mut heights);
         st.cam_bases = bases;
+        st.cam_heights = heights;
     }
     let cd = if p != 0 { char_data(m, p) } else { 0 };
     if cd != 0 {

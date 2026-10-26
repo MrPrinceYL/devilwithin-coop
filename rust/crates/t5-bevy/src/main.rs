@@ -40,6 +40,10 @@ struct Screen {
 #[derive(Resource)]
 struct PendingLink(Option<Arc<FrameShared>>);
 
+/// The rectangle showing the game's picture (4:3, widened to 16:9 for split screen).
+#[derive(Component)]
+struct GameQuad;
+
 #[derive(Component)]
 struct StatusText;
 
@@ -87,7 +91,8 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK)).add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Devil Within Mod".into(),
-            resolution: (1280, 960).into(),
+            // Co-op split screen shows 16:9 (coop.md).
+            resolution: if std::env::var_os("T5_DW_SPLIT").is_some() { (1600, 900) } else { (1280, 960) }.into(),
             ..default()
         }),
         ..default()
@@ -237,7 +242,7 @@ fn setup(
         Tonemapping::None,
         Transform::from_xyz(0.0, 0.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.spawn((Mesh3d(meshes.add(Rectangle::new(4.0, 3.0))), MeshMaterial3d(material.clone()), Transform::IDENTITY));
+    commands.spawn((Mesh3d(meshes.add(Rectangle::new(4.0, 3.0))), MeshMaterial3d(material.clone()), Transform::IDENTITY, GameQuad));
     commands.spawn((
         Text::new(""),
         TextFont { font_size: FontSize::Px(14.0), ..default() },
@@ -282,6 +287,8 @@ fn show_frame(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     settings: Res<settings::Settings>,
+    mut quad: Query<&mut Transform, With<GameQuad>>,
+    mut projection: Query<&mut Projection>,
 ) {
     let s = &mut *screen;
     if s.gamma != settings.gamma {
@@ -291,27 +298,47 @@ fn show_frame(
         }
     }
     let mut n = s.frames.take_if_new(s.seen, &mut s.buf);
-    // Co-op split screen (coop.md): player 1's camera left, player 2's right, the middle half of
-    // each (same height, half the width).
-    if ps2_runtime::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed) && n != s.seen {
+    // Co-op split screen (coop.md): 16:9, player 1's camera left, player 2's right, each the
+    // middle two thirds of its picture (8:9 at the picture's 4:3, nothing stretched).
+    let split = ps2_runtime::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed);
+    if split && n != s.seen {
         if let Ok(v) = s.frames.by_view.lock() {
-            let (w, h) = (s.buf.width as usize, s.buf.height as usize);
-            let fits = |f: &ps2_runtime::gs::Frame| f.width as usize == w && f.height as usize == h && f.rgba.len() == w * h * 4;
+            let (w, h) = (v[0].width as usize, v[0].height as usize);
+            let fits = |f: &ps2_runtime::gs::Frame| f.width as usize == w && f.height as usize == h && f.rgba.len() == w * h * 4 && w > 0;
             if fits(&v[0]) && fits(&v[1]) {
-                let half = w / 2;
+                let cw = (w * 2 / 3) & !1;
+                let ow = cw * 2;
+                s.buf.width = ow as u32;
+                s.buf.height = h as u32;
+                s.buf.rgba.resize(ow * h * 4, 0);
                 for y in 0..h {
-                    let row = y * w * 4;
                     for (k, f) in v.iter().enumerate() {
-                        let src = row + (w / 4) * 4;
-                        let dst = row + k * half * 4;
-                        s.buf.rgba[dst..dst + half * 4].copy_from_slice(&f.rgba[src..src + half * 4]);
+                        let src = (y * w + (w - cw) / 2) * 4;
+                        let dst = (y * ow + k * cw) * 4;
+                        s.buf.rgba[dst..dst + cw * 4].copy_from_slice(&f.rgba[src..src + cw * 4]);
                     }
-                    for x in [half - 1, half] {
-                        s.buf.rgba[row + x * 4..row + x * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+                    for x in [cw - 1, cw] {
+                        let o = (y * ow + x) * 4;
+                        s.buf.rgba[o..o + 4].copy_from_slice(&[0, 0, 0, 255]);
                     }
                 }
             } else {
                 n = s.seen;
+            }
+        }
+    }
+    // The picture's shape: 16:9 with split screen, else 4:3.
+    let wide = if split { 4.0 / 3.0 } else { 1.0 };
+    for mut t in &mut quad {
+        if t.scale.x != wide {
+            t.scale.x = wide;
+        }
+    }
+    for mut p in &mut projection {
+        if let Projection::Orthographic(o) = &mut *p {
+            let now = matches!(o.scaling_mode, ScalingMode::AutoMin { min_width, .. } if min_width == 4.0 * wide);
+            if !now {
+                o.scaling_mode = ScalingMode::AutoMin { min_width: 4.0 * wide, min_height: 3.0 };
             }
         }
     }

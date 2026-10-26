@@ -25,6 +25,25 @@ pub const SQUARE: u16 = 1 << 15;
 /// that takes the pad, e.g. the Devil Within mod menu); `PadShared` keeps the real state.
 pub static BLOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Left stick turned by this angle per port (0x10000 = full turn, counter-clockwise) before the
+/// game reads it: co-op split screen, where each player steers relative to their own camera
+/// while the game uses the camera it holds that frame (a mod hook, set by the game crate).
+pub static TURN: [std::sync::atomic::AtomicI32; 2] = [std::sync::atomic::AtomicI32::new(0), std::sync::atomic::AtomicI32::new(0)];
+
+/// `sticks` (RX, RY, LX, LY bytes) with the left stick turned by `turn` (see TURN).
+pub fn turn_left_stick(sticks: u32, turn: i32) -> u32 {
+    if turn == 0 || sticks == 0 {
+        return sticks;
+    }
+    let x = ((sticks >> 16) & 0xFF) as f32 - 128.0;
+    let y = 128.0 - ((sticks >> 24) & 0xFF) as f32;
+    let a = turn as f32 * std::f32::consts::TAU / 65536.0;
+    let (s, c) = a.sin_cos();
+    let byte = |v: f32| (v.round() as i32).clamp(0, 255) as u32;
+    let (nx, ny) = (byte(128.0 + x * c - y * s), byte(128.0 - (x * s + y * c)));
+    (sticks & 0xFFFF) | nx << 16 | ny << 24
+}
+
 pub struct PadShared {
     pub buttons: [AtomicU16; 2],
     pub connected: [AtomicBool; 2],
