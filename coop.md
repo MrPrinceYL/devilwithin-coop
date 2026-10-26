@@ -102,7 +102,7 @@ komisch) gebaut, **noch nicht getestet**:
   zusätzlichen Update von Spieler 2s Kamera wird er gesichert und zurückgesetzt, so steht er am
   Bildanfang immer auf Spieler 1. In Spieler 2s Bildern setzt ihn das Spiel-Update noch auf
   Spieler 2 (Reihenfolge Kamera/Sound im Bild unbekannt) – Test nötig.
-- **16:9:** Das Bild wird im Splitscreen 16:9 (im 4:3-Fenster mit Rand oben/unten; Vollbild
+- **16:9:** Das Fenster startet 16:9 (1600×900, Einzelbild 4:3 mittig); das Bild wird im Splitscreen 16:9 (Vollbild
   oder breites Fenster füllt es); jede Hälfte = mittlere **2/3** des Spielbilds
   (8:9 bei 4:3, nichts gestreckt). Beide Kameras im Splitscreen um **1,35** zurückgezogen
   (Abstand/Höhen +0x10/+0x0C/+0x20 je Ansicht, Spielwerte gemerkt, `split_zoom`); die

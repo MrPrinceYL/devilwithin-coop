@@ -91,7 +91,8 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK)).add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Devil Within Mod".into(),
-            resolution: (1280, 960).into(),
+            // 16:9 (user, 26.10.); the 4:3 game picture sits centred, split screen fills it.
+            resolution: (1600, 900).into(),
             ..default()
         }),
         ..default()
