@@ -751,6 +751,11 @@ struct State {
     /// Where each man was when the mod first saw it.
     spawn: std::collections::HashMap<u32, [u32; 3]>,
     last: String,
+    /// Co-op: player 2's character, a running join (the spawn is for him), his port's buttons
+    /// last vblank.
+    coop: Option<u32>,
+    coop_join: bool,
+    coop_prev: u16,
 }
 
 fn position(m: &Machine, man: u32) -> [u32; 3] {
@@ -1009,6 +1014,12 @@ fn become_step(m: &mut Machine, st: &mut State) {
         Become::Created { old_id, id, waited } if st.spawning => {
             let before = st.before.clone();
             match characters(m).into_iter().find(|t| !before.contains(t)) {
+                Some(new) if st.coop_join => {
+                    st.coop = Some(new);
+                    ps2_runtime::diag::log(format!("devil mod: player 2 joined as {new:#x}"));
+                    crate::devil_debug::notify("Player 2 joined", true);
+                    st.become_step = Become::Idle;
+                }
                 Some(new) => {
                     st.last = spawned(m, new, &before);
                     st.become_step = Become::Idle;
@@ -1060,6 +1071,181 @@ fn spawned(m: &mut Machine, new: u32, before: &[u32]) -> String {
         profiles(m).iter().map(|p| p.2.clone()).collect::<Vec<_>>()
     ));
     format!("spawned {}", name(m, new))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Co-op (coop.md): player 2 drives a second Jin with the other controller port. Devil Within
+// reads only one pad into a character (input record controller 0, 0x15C6A0); a character on
+// the AI path (controller < 0) reads the AI's pad buffer instead, which its AI fills right
+// before the character's update (0x1493F8: 0x15E5F8(0x174720(ai)), 0x1746D0(ai), 0x15CF40).
+// The mod suspends that AI (AI record +0 bit 4: 0x174BE8 then writes nothing) and writes the
+// other port into the buffer in the format 0x15C6A0 builds from pad 1.
+
+/// AI records (0x174720): pool **0x4804CC, stride [0x4804C0], count [0x4804BA] (short); index
+/// man +0x148. +0 (short) flags, bit 4 = suspended; +0xB60 the AI's pad buffer {+0 buttons,
+/// +4 / +8 / +0xC / +0x10 -> input record +0x10 / +0x14 / +0x18 / +0x1C}.
+const AI_POOL: u32 = 0x0048_04CC;
+const AI_STRIDE: u32 = 0x0048_04C0;
+const AI_COUNT: u32 = 0x0048_04BA;
+const AI_SUSPENDED: u16 = 4;
+const AI_PAD: u32 = 0xB60;
+/// The game's per-port pad state (0x101FC0, stride 100): +0x40 buttons (libpad bits, low half),
+/// +0x5C controller type, +0x60 status (0 = valid); +0 / +4 / +8 / +0xC the sticks as 0x1021F0
+/// copies them to 0x2ACE60 / 64 / 68 / 6C for pad 1.
+const PAD_STATE: u32 = 0x002A_98A0;
+/// The port pad 1 is read from (0x101D98; signed byte), its config flags (bit 0 = no input,
+/// 0x1021F0) and button remapping (0x425833 + 1..7: L3 R3 and the d-pad, 0x42583B + 0..7: L2 ..
+/// SQUARE; target bit numbers).
+const PAD1_PORT: u32 = 0x0042_5822;
+const PAD1_FLAGS: u32 = 0x0042_5821;
+const PAD_MAP_A: u32 = 0x0042_5833;
+const PAD_MAP_B: u32 = 0x0042_583B;
+/// Options (0x104FF0): [[0x41ADF4] + 0x38] + port * 4 + 0xC, bits 7-8 = stick mode of that port.
+const OPTIONS: u32 = 0x0041_ADF4;
+/// Host pad bits (ps2_runtime::pad) for joining / leaving.
+const P2_START: u16 = ps2_runtime::pad::START;
+const P2_SELECT: u16 = ps2_runtime::pad::SELECT;
+
+fn ai_record(m: &Machine, t: u32) -> u32 {
+    let i = word(m, t + 0x148) as i32;
+    if i < 0 || half(m, AI_COUNT) < 1 {
+        return 0;
+    }
+    word(m, word(m, AI_POOL)).wrapping_add(word(m, AI_STRIDE).wrapping_mul(i as u32))
+}
+
+/// The controller port player 2 uses: the one pad 1 is not read from.
+fn p2_port(m: &Machine) -> usize {
+    if ram_read(m, PAD1_PORT, 1) == 1 { 0 } else { 1 }
+}
+
+/// 0x15C680: stick dead zone (|v| < 0x58 -> 0), low 4 bits dropped.
+fn stick(v: i32) -> u32 {
+    if (v.wrapping_add(0x57) as u32) > 0xAE { (v as u32) & !0xF } else { 0 }
+}
+
+/// What 0x15C6A0 makes of pad 1, built from `port`'s state with pad 1's mapping and options:
+/// (buttons, the four stick words of the AI pad buffer).
+fn pad_as_game(m: &Machine, port: usize) -> (u32, [u32; 4]) {
+    let base = PAD_STATE + 100 * port as u32;
+    let raw = word(m, base + 0x40) & 0xFFFF;
+    let valid = word(m, base + 0x60) == 0 && ram_read(m, PAD1_FLAGS, 1) & 1 == 0;
+    // 0x1021F0: libpad bits -> the configured bits (the d-pad only off analog / DualShock 2).
+    let map = |a: u32| 1u32 << (ram_read(m, a, 1) as u32 & 0x1F);
+    let mut b = 0u32;
+    if valid {
+        let kind = word(m, base + 0x5C);
+        let mut pairs = vec![(0x2, PAD_MAP_A + 1), (0x4, PAD_MAP_A + 2)];
+        if kind != 0x73 && kind != 0x79 {
+            pairs.extend([(0x10, PAD_MAP_A + 4), (0x20, PAD_MAP_A + 5), (0x40, PAD_MAP_A + 6), (0x80, PAD_MAP_A + 7)]);
+        }
+        pairs.extend((0..8).map(|i| (0x100u32 << i, PAD_MAP_B + i)));
+        for (bit, at) in pairs {
+            if raw & bit != 0 {
+                b |= map(at);
+            }
+        }
+    }
+    b |= raw & 0x9;
+    // 0x15C4E0: the configured bits -> the game's button word.
+    const ORDER: [(u32, u32); 16] =
+        [(0, 0), (1, 1), (2, 8), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 10), (9, 2), (10, 9), (11, 11), (12, 12), (13, 14), (14, 13), (15, 15)];
+    let buttons = ORDER.iter().filter(|(from, _)| b >> from & 1 != 0).fold(0, |a, (_, to)| a | 1 << to);
+    if !valid {
+        return (buttons, [0; 4]);
+    }
+    // The axes as pad 1's copies 0x2ACE60 / 64 / 68 / 6C (headless: the left stick's x is 0x60).
+    let s = |o: u32| word(m, base + o) as i32;
+    let (a60, a64, a68, a6c) = (s(0), s(4), s(8), s(0xC));
+    // 0x104FF0 for pad 1's port: which stick axes are inverted.
+    let p1 = ram_read(m, PAD1_PORT, 1) as u8 as i8;
+    let opts = if word(m, OPTIONS) != 0 { word(m, word(m, OPTIONS) + 0x38) } else { 0 };
+    let mode = if p1 < 0 || opts == 0 { -1 } else { (word(m, opts + p1 as u32 * 4 + 0xC) >> 7 & 3) as i32 };
+    let (b4, b8) = match mode {
+        1 => (stick(a68), stick(a6c)),
+        2 => (stick(-a68), stick(-a6c)),
+        3 => (stick(-a68), stick(a6c)),
+        _ => (stick(a68), stick(-a6c)),
+    };
+    (buttons, [b4, b8, stick(a60), stick(-a64)])
+}
+
+/// Every vertical blank: player 2 joins with START on the other port (a Jin next to player 1,
+/// on his team), SELECT brings him next to player 1, SELECT + START leaves; while he plays the
+/// other port drives his character.
+fn coop_update(m: &mut Machine, st: &mut State, playing: bool) {
+    let port = p2_port(m);
+    let (held, _) = m.shared.pad.get(port);
+    let new = held & !st.coop_prev;
+    st.coop_prev = held;
+    if st.coop.is_some_and(|t| !alive(m, t)) {
+        st.coop = None;
+        crate::devil_debug::notify("Player 2 is down (START: join again)", false);
+    }
+    if st.coop_join && st.become_step == Become::Idle {
+        st.coop_join = false;
+        if st.coop.is_none() {
+            crate::devil_debug::notify("Player 2 could not join here", false);
+        }
+    }
+    let p1 = player(m);
+    match st.coop {
+        None if playing && new & P2_START != 0 && !st.coop_join && st.become_step == Become::Idle => {
+            match profiles(m).iter().position(|p| p.0 == JIN) {
+                Some(i) => {
+                    st.spawning = true;
+                    st.become_pack = None;
+                    st.coop_join = true;
+                    st.become_step = Become::Loading { profile: i, waited: 0 };
+                }
+                None => crate::devil_debug::notify("Player 2: no profiles loaded", false),
+            }
+        }
+        Some(t) if playing && held & P2_SELECT != 0 && new & P2_START != 0 => {
+            request_thread_call(TASK_KILL, &[TASK_POOL as u64, t as u64]);
+            st.coop = None;
+            crate::devil_debug::notify("Player 2 left", false);
+        }
+        Some(t) if playing && new & P2_SELECT != 0 && held & P2_START == 0 && p1 != 0 => {
+            let pos = position(m, p1).map(f32::from_bits);
+            set_position(m, t, [pos[0] + 200.0, pos[1], pos[2]].map(f32::to_bits));
+        }
+        _ => {}
+    }
+    let Some(t) = st.coop else { return };
+    // Player 1's team (the game gives a created man its profile's afterwards).
+    let (d1, d2) = (if p1 != 0 { char_data(m, p1) } else { 0 }, char_data(m, t));
+    if d1 != 0 && d2 != 0 {
+        ram_write(m, d2 + 0x300A, 2, half(m, d1 + 0x300A) as u16 as u64);
+    }
+    let (rec, ai) = (input_record(m, t), ai_record(m, t));
+    if rec == 0 || ai == 0 {
+        return;
+    }
+    if half(m, rec) >= 0 {
+        ram_write(m, rec, 2, 0xFFFF);
+    }
+    let flags = half(m, ai) as u16;
+    ram_write(m, ai, 2, (flags | AI_SUSPENDED) as u64);
+    // Nothing for player 2 while a menu is up (pause, results) or the mod menu is open.
+    let (buttons, sticks) = if playing && !st.open { pad_as_game(m, port) } else { (0, [0; 4]) };
+    // T5_DW_COOPLOG=1: what player 2 sends, with the record the game built from it last frame.
+    if ps2_runtime::diag::enabled("T5_DW_COOPLOG") && (buttons != 0 || sticks != [0; 4] || new != 0) {
+        let pos = position(m, t).map(f32::from_bits);
+        let r1 = if p1 != 0 { input_record(m, p1) } else { 0 };
+        let rec_of = |r: u32| if r == 0 { [0; 3] } else { [word(m, r + 8), word(m, r + 0x10), word(m, r + 0x14)] };
+        ps2_runtime::diag::log(format!(
+            "coop: port {port} buttons {buttons:#06x} sticks {sticks:x?} -> record {:x?} ai {:#x}, pos {pos:.0?}; player 1 record {:x?} pos {:.0?}",
+            rec_of(rec),
+            half(m, ai),
+            rec_of(r1),
+            position(m, p1).map(f32::from_bits)
+        ));
+    }
+    ram_write(m, ai + AI_PAD, 4, buttons as u64);
+    for (i, v) in sticks.iter().enumerate() {
+        ram_write(m, ai + AI_PAD + 4 + 4 * i as u32, 4, *v as u64);
+    }
 }
 
 /// Items as the game drops them from defeated enemies (0x148F20): gimmick 0x1C6D88(parent, type,
@@ -1230,6 +1416,9 @@ pub fn update(m: &mut Machine, out: &mut String) {
         saved_pos: None,
         spawn: std::collections::HashMap::new(),
         last: String::new(),
+        coop: None,
+        coop_join: false,
+        coop_prev: 0,
     });
     become_step(m, st);
     let living = characters(m);
@@ -1317,6 +1506,7 @@ pub fn update(m: &mut Machine, out: &mut String) {
         ps2_runtime::diag::log("devil mod: debug mode ended with its run".into());
     }
     let playing = in_game(m);
+    coop_update(m, st, playing);
     if !st.open && playing {
         if konami(st, new) {
             let on = !st.debug_on;

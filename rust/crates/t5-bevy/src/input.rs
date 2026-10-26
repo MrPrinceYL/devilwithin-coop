@@ -523,12 +523,20 @@ pub fn read_input(
     // Scripted presses of a measurement run (`--press`, t5_recomp::script).
     let b1 = input.buttons(&dev1) | t5_recomp::script::held();
     input.pad.set(0, b1, true);
-    input.pad.set_sticks(0, input.sticks(&dev1));
+    let s1 = match t5_recomp::script::sticks_on(0) {
+        0 => input.sticks(&dev1),
+        s => s,
+    };
+    input.pad.set_sticks(0, s1);
     if two {
         let dev2 = Devices { keys: &none, mouse: &none_m, pads: pads[1..2].to_vec(), origins: &input.origins, mouse_stick: Vec2::ZERO, deadzone: c.deadzone };
         let b2 = input.buttons(&dev2);
         input.pad.set(1, b2, true);
         input.pad.set_sticks(1, input.sticks(&dev2));
+    } else if t5_recomp::script::uses_p2() {
+        // Scripted presses on the pad in port 2 (`--press P2:BUTTON@SECOND`, co-op tests).
+        input.pad.set(1, t5_recomp::script::held_on(1), true);
+        input.pad.set_sticks(1, t5_recomp::script::sticks_on(1));
     } else {
         input.pad.set(1, 0, false);
         input.pad.set_sticks(1, 0);

@@ -2,7 +2,8 @@
 //! displayed frame as a PNG every second and stops after the given time.
 //!
 //! Usage: t5-headless [seconds] [out_dir] [--press BUTTON@SECOND ...]
-//! (BUTTON: START, CROSS, CIRCLE, UP, DOWN, LEFT, RIGHT; held for half a second.)
+//! (BUTTON: START, CROSS, CIRCLE, UP, DOWN, LEFT, RIGHT; held for half a second; `P2:BUTTON`
+//! presses it on the pad in port 2, which is then connected.)
 //! Seconds are device time: `T5_WARP=1` (or ranges, `ps2_runtime::warp_on`) skips idle time.
 
 use std::sync::atomic::Ordering::Relaxed;
@@ -26,8 +27,14 @@ fn main() {
         .expect("spawn guest thread");
     t5_recomp::script::init(&args);
     let pad = shared.pad.clone();
+    let p2 = t5_recomp::script::uses_p2();
     std::thread::spawn(move || loop {
         pad.buttons[0].store(t5_recomp::script::held(), std::sync::atomic::Ordering::Relaxed);
+        pad.set_sticks(0, t5_recomp::script::sticks_on(0));
+        if p2 {
+            pad.set(1, t5_recomp::script::held_on(1), true);
+            pad.set_sticks(1, t5_recomp::script::sticks_on(1));
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     });
     // T5_PROFILE=<start>: sample the guest thread from that second to the end (Windows only).

@@ -38,12 +38,17 @@ pub fn run() -> ! {
 
 /// Scripted pad presses for measurement runs (t5-headless, and t5-bevy for window runs):
 /// `--press BUTTON@SECOND` (BUTTON: START, CROSS, CIRCLE, UP, DOWN, LEFT, RIGHT), held for
-/// T5_HOLD seconds (default 0.5), counted from `script::init`.
+/// T5_HOLD seconds (default 0.5), counted from `script::init`; `P2:BUTTON@SECOND` presses it on
+/// the pad in port 2; `LSTICK_RIGHT` / `_LEFT` / `_UP` / `_DOWN` tilt the left stick fully.
 pub mod script {
     use std::sync::OnceLock;
 
-    /// Default hold time, presses (button, second, own hold time).
-    static SCRIPT: OnceLock<(f64, Vec<(u16, f64, Option<f64>)>)> = OnceLock::new();
+    /// Default hold time, presses (port, button bits | LSTICK_* << 16, second, own hold time).
+    static SCRIPT: OnceLock<(f64, Vec<(usize, u32, f64, Option<f64>)>)> = OnceLock::new();
+    const LSTICK_RIGHT: u32 = 1 << 16;
+    const LSTICK_LEFT: u32 = 1 << 17;
+    const LSTICK_UP: u32 = 1 << 18;
+    const LSTICK_DOWN: u32 = 1 << 19;
 
     /// Read the presses from the command line (seconds of device time, `ps2_runtime::secs`, so
     /// they keep their place under `T5_WARP`); `BUTTON@SECOND+HOLD` holds it HOLD seconds.
@@ -51,31 +56,23 @@ pub mod script {
     pub fn init(args: &[String]) -> bool {
         let mut presses = Vec::new();
         for w in args.windows(2).filter(|w| w[0] == "--press") {
-            if let Some((b, t)) = w[1].split_once('@') {
+            let (port, press) = match w[1].strip_prefix("P2:") {
+                Some(p) => (1, p),
+                None => (0, w[1].as_str()),
+            };
+            if let Some((b, t)) = press.split_once('@') {
                 let bit = match b {
-                    "START" => ps2_runtime::pad::START,
-                    "CROSS" => ps2_runtime::pad::CROSS,
-                    "CIRCLE" => ps2_runtime::pad::CIRCLE,
-                    "UP" => ps2_runtime::pad::UP,
-                    "DOWN" => ps2_runtime::pad::DOWN,
-                    "LEFT" => ps2_runtime::pad::LEFT,
-                    "RIGHT" => ps2_runtime::pad::RIGHT,
-                    "SELECT" => ps2_runtime::pad::SELECT,
-                    "L3" => ps2_runtime::pad::L3,
-                    "R3" => ps2_runtime::pad::R3,
-                    "SQUARE" => ps2_runtime::pad::SQUARE,
-                    "TRIANGLE" => ps2_runtime::pad::TRIANGLE,
-                    "L1" => ps2_runtime::pad::L1,
-                    "R1" => ps2_runtime::pad::R1,
-                    "L2" => ps2_runtime::pad::L2,
-                    "R2" => ps2_runtime::pad::R2,
-                    _ => 0,
+                    "LSTICK_RIGHT" => LSTICK_RIGHT,
+                    "LSTICK_LEFT" => LSTICK_LEFT,
+                    "LSTICK_UP" => LSTICK_UP,
+                    "LSTICK_DOWN" => LSTICK_DOWN,
+                    b => button(b) as u32,
                 };
                 let (at, hold) = match t.split_once('+') {
                     Some((a, h)) => (a.parse().unwrap_or(0.0), h.parse().ok()),
                     None => (t.parse().unwrap_or(0.0), None),
                 };
-                presses.push((bit, at, hold));
+                presses.push((port, bit, at, hold));
             }
         }
         // T5_HOLD=<seconds>: how long a press is held (menus repeat when held long).
@@ -85,11 +82,57 @@ pub mod script {
         some
     }
 
-    /// The scripted buttons held right now.
+    fn button(name: &str) -> u16 {
+        match name {
+            "START" => ps2_runtime::pad::START,
+            "CROSS" => ps2_runtime::pad::CROSS,
+            "CIRCLE" => ps2_runtime::pad::CIRCLE,
+            "UP" => ps2_runtime::pad::UP,
+            "DOWN" => ps2_runtime::pad::DOWN,
+            "LEFT" => ps2_runtime::pad::LEFT,
+            "RIGHT" => ps2_runtime::pad::RIGHT,
+            "SELECT" => ps2_runtime::pad::SELECT,
+            "L3" => ps2_runtime::pad::L3,
+            "R3" => ps2_runtime::pad::R3,
+            "SQUARE" => ps2_runtime::pad::SQUARE,
+            "TRIANGLE" => ps2_runtime::pad::TRIANGLE,
+            "L1" => ps2_runtime::pad::L1,
+            "R1" => ps2_runtime::pad::R1,
+            "L2" => ps2_runtime::pad::L2,
+            "R2" => ps2_runtime::pad::R2,
+            _ => 0,
+        }
+    }
+
+    /// The scripted buttons held right now on pad 1.
     pub fn held() -> u16 {
+        held_on(0)
+    }
+
+    /// The scripted buttons held right now on the pad in `port` (0 or 1).
+    pub fn held_on(port: usize) -> u16 {
+        input_on(port) as u16
+    }
+
+    /// The scripted sticks of the pad in `port` (RX, RY, LX, LY bytes; 0 = all centred).
+    pub fn sticks_on(port: usize) -> u32 {
+        let i = input_on(port);
+        if i >> 16 == 0 {
+            return 0;
+        }
+        let axis = |plus: u32, minus: u32| if i & plus != 0 { 0xFF } else if i & minus != 0 { 0x00 } else { 0x80 };
+        0x8080 | axis(LSTICK_RIGHT, LSTICK_LEFT) << 16 | axis(LSTICK_DOWN, LSTICK_UP) << 24
+    }
+
+    fn input_on(port: usize) -> u32 {
         let Some((hold, presses)) = SCRIPT.get() else { return 0 };
         let t = ps2_runtime::secs();
-        presses.iter().filter(|(_, at, h)| t >= *at && t < at + h.unwrap_or(*hold)).fold(0, |a, (b, _, _)| a | b)
+        presses.iter().filter(|(p, _, at, h)| *p == port && t >= *at && t < at + h.unwrap_or(*hold)).fold(0, |a, (_, b, _, _)| a | b)
+    }
+
+    /// Whether the script presses buttons on the pad in port 2.
+    pub fn uses_p2() -> bool {
+        SCRIPT.get().is_some_and(|(_, presses)| presses.iter().any(|(p, ..)| *p == 1))
     }
 }
 
