@@ -117,7 +117,7 @@ pub struct MenuState {
     selected: usize,
 }
 
-const ITEMS: usize = 8;
+const ITEMS: usize = 10;
 
 /// Apply the saved settings to the window at startup and build the (hidden) P settings menu.
 pub fn setup(mut commands: Commands, settings: Res<Settings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
@@ -192,6 +192,12 @@ pub fn menu(
                         let i = order.iter().position(|f| *f == s.fast_load).unwrap_or(0) as i32;
                         s.fast_load = order[(i + dir).rem_euclid(3) as usize];
                     }
+                    // Co-op, for this session (coop.md).
+                    7 => crate::input::toggle_pad_p2(),
+                    8 => {
+                        let ff = &t5_recomp::devil_mod::FRIENDLY_FIRE;
+                        ff.fetch_xor(true, Relaxed);
+                    }
                     _ => *s = Settings::default(),
                 }
                 *s = s.clone().sanitized();
@@ -211,6 +217,11 @@ pub fn menu(
                         8 => "Very fast (8x)",
                         _ => "Original",
                     }
+                ),
+                format!("Gamepad port  < {} >  (F4)", if crate::input::PAD_P2.load(Relaxed) { "2 (co-op player 2)" } else { "1" }),
+                format!(
+                    "Friendly fire < {} >  (co-op)",
+                    if t5_recomp::devil_mod::FRIENDLY_FIRE.load(Relaxed) { "On" } else { "Off" }
                 ),
                 "Reset to defaults  [Enter]".to_string(),
             ];

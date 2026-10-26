@@ -8,10 +8,16 @@ Code: `rust/crates/t5-recomp/src/devil_mod.rs`, Abschnitt „Co-op“ (`coop_upd
 
 ## Spielen
 
-- Zwei Gamepads anschließen (`play.bat` / `play.sh`). Port 1 = Tastatur/Maus + das zuerst
-  benutzte Gamepad, Port 2 = das als zweites benutzte Gamepad (`t5-bevy/src/input.rs`).
-  Spielt Spieler 1 nur mit der Tastatur, landet ein einzelnes Gamepad noch auf Port 1 (siehe
-  „Offen“).
+- Zwei Gamepads (`play.bat` / `play.sh`): Port 1 = Tastatur/Maus + das zuerst benutzte
+  Gamepad, Port 2 = das als zweites benutzte Gamepad (`t5-bevy/src/input.rs`).
+- Tastatur + ein Gamepad: **F4** oder Einstellungsmenü (**P**) „Gamepad port“ schaltet das
+  Gamepad auf Port 2 (Spieler 2) und zurück (Meldung „Gamepad: port 2“ oben rechts); Port 1 ist
+  dann nur Tastatur/Maus. `T5_PAD_P2=1` startet gleich so.
+- **Friendly Fire:** Einstellungsmenü (**P**) „Friendly fire“. An: Spieler 2 bekommt eine eigene
+  Team-ID (die erste, die keine andere Figur hat), sodass sich die Spieler gegenseitig treffen und
+  die Gegner beide angreifen; aus: Team von Spieler 1. Das Spiel lässt nur Figuren
+  verschiedener Teams einander treffen (0x16F930 vergleicht die Team-IDs, Figurdaten +0x300A).
+  Beide Menüpunkte gelten nur für die laufende Sitzung.
 - **Beitreten:** Spieler 2 drückt **START** im Spiel (kein Menü offen). Ein zweiter Jin erscheint
   neben Spieler 1 (Meldung „Player 2 joined“ oben rechts). Der Konami-Code/Debug-Modus ist dafür
   **nicht** nötig.
@@ -81,12 +87,17 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
 | Steuerkreuz | wie Spieler 1: bewegt im Spiel nicht (DualShock-2-Typ, 0x1021F0 übernimmt es dann nicht; auch Datensatz von Spieler 1 bleibt 0) | Log |
 | SELECT-Sprung | **funktioniert** | Bild: Spieler 2 neben Spieler 1 |
 | Verlassen / Wiedereinstieg | **funktioniert** | „Player 2 left“, Task-Kill 0x20B428, neuer Beitritt 0xf9b800 |
-| Spieltest mit zwei Gamepads | offen (Nutzer) | – |
+| Friendly Fire | gebaut, Treffer zwischen den Spielern ungetestet | – |
+| Spieltest im Fenster (Nutzer = Spieler 2, F4/`T5_PAD_P2`) | Beitritt im Fenster geklappt (Log 26.10.) | Log |
 
 ## Offen / bekannte Grenzen
 
-- **Kamera** folgt nur Spieler 1 (Kamera-Tasks folgen ManMgr-Eintrag +0). Kein geteilter
-  Bildschirm; SELECT holt Spieler 2 zurück ins Bild.
+- **Kamera** folgt nur Spieler 1 (Kamera-Tasks folgen ManMgr-Eintrag +0); SELECT holt Spieler 2
+  zurück ins Bild. **Geplant (Nutzer 26.10.):** lokal Splitscreen, online ohne Splitscreen (jeder
+  sein Bild). Weg: zweite Kamera auf Spieler 2, abwechselnd gerendert (je Ansicht 30 fps, Logik
+  60), das Fenster setzt die Hälften zusammen; online schickt der Host die Ansicht von Spieler 2
+  als Bild-Stream, der Gast seine Eingaben. Befund: Die Kamera ist ein Einzelstück
+  ([0x41BD10], 0x154308 legt keine zweite an), Update 0x154190 → 0x153BB0.
 - **HUD** zeigt nur Spieler 1. Lebensleiste für Spieler 2 fehlt (Overlay wäre möglich).
 - **Gegner** zielen auf Spieler 1 (Gegner-Ziel = ManMgr-Eintrag); Spieler 2 wird nur nebenbei
   getroffen. Ob Gegner Spieler 2 angreifen, ist ungetestet.
@@ -94,8 +105,6 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
   dann einfach wieder START.
 - Der Tod von Spieler 2 zählt für das Spiel wie ein besiegter Gegner (mögliche Item-Drops).
 - Nur Jin als Figur für Spieler 2 (andere Profile wären über den Become/Spawn-Ladeweg möglich).
-- Tastatur für Spieler 1 + ein einzelnes Gamepad für Spieler 2: noch nicht, das Gamepad geht an
-  Port 1 (`input.rs` müsste dafür eine Einstellung bekommen).
 - **Online-Koop** (coop-anything: Host-Autorität, Steam-Relay) ist nicht gebaut. Naheliegender
   Weg für diese Rekompilation: Eingaben von Spieler 2 übers Netz in Port 2 schreiben und das Bild
   streamen (Remote-Play-Prinzip), weil zwei getrennte Spielinstanzen deterministisch gleich laufen

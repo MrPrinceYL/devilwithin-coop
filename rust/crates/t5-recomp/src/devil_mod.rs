@@ -1104,6 +1104,9 @@ const PAD_MAP_B: u32 = 0x0042_583B;
 const OPTIONS: u32 = 0x0041_ADF4;
 /// Host pad bits (ps2_runtime::pad) for joining / leaving.
 const P2_START: u16 = ps2_runtime::pad::START;
+/// Co-op friendly fire (the window's settings menu): player 2 gets a team of his own (the game
+/// only lets characters of different teams hit each other, 0x16F930), else player 1's.
+pub static FRIENDLY_FIRE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const P2_SELECT: u16 = ps2_runtime::pad::SELECT;
 
 fn ai_record(m: &Machine, t: u32) -> u32 {
@@ -1213,10 +1216,23 @@ fn coop_update(m: &mut Machine, st: &mut State, playing: bool) {
         _ => {}
     }
     let Some(t) = st.coop else { return };
-    // Player 1's team (the game gives a created man its profile's afterwards).
+    // Player 1's team (the game gives a created man its profile's afterwards); with friendly
+    // fire the first team nobody else has, so both players and the enemies hit each other.
     let (d1, d2) = (if p1 != 0 { char_data(m, p1) } else { 0 }, char_data(m, t));
     if d1 != 0 && d2 != 0 {
-        ram_write(m, d2 + 0x300A, 2, half(m, d1 + 0x300A) as u16 as u64);
+        let team = if FRIENDLY_FIRE.load(std::sync::atomic::Ordering::Relaxed) {
+            let taken: Vec<i16> = characters(m)
+                .into_iter()
+                .filter(|&c| c != t)
+                .map(|c| char_data(m, c))
+                .filter(|&d| d != 0)
+                .map(|d| half(m, d + 0x300A))
+                .collect();
+            (0..16).find(|i| !taken.contains(i)).unwrap_or(15)
+        } else {
+            half(m, d1 + 0x300A)
+        };
+        ram_write(m, d2 + 0x300A, 2, team as u16 as u64);
     }
     let (rec, ai) = (input_record(m, t), ai_record(m, t));
     if rec == 0 || ai == 0 {

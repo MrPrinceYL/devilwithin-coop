@@ -12,7 +12,8 @@
 //! over HID instead (hid.rs), since the system API often delivers none of their input over
 //! Bluetooth. Port 1 is the keyboard and mouse plus the first gamepad that is used (every gamepad
 //! until one is); the second gamepad that is used becomes the pad in port 2, with the same
-//! gamepad bindings.
+//! gamepad bindings. F4 (or `T5_PAD_P2=1` at the start; co-op, coop.md) switches to:
+//! port 1 is only the keyboard and mouse, the gamepad is the pad in port 2.
 //!
 //! Origin calibration: every gamepad axis and analog trigger that rests far from zero right after
 //! connecting is re-centred on that rest value (many DirectInput pads expose a trigger as an axis
@@ -343,11 +344,23 @@ pub struct Input {
     capturing: bool,
 }
 
+/// Co-op (coop.md): port 1 is only the keyboard and mouse, the gamepad is the pad in port 2
+/// (F4 or the settings menu switch; T5_PAD_P2=1 starts with it).
+pub static PAD_P2: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switch the gamepad between port 1 and port 2 (with a notice).
+pub fn toggle_pad_p2() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let on = !PAD_P2.fetch_xor(true, Relaxed);
+    t5_recomp::devil_debug::notify(if on { "Gamepad: port 2" } else { "Gamepad: port 1" }, on);
+}
+
 impl Input {
     /// Input state feeding `pad` (the emulated controller ports); loads controls.json and starts
     /// the HID reader for Sony pads.
     pub fn new(pad: Arc<PadShared>) -> Input {
         let controls = Controls::load_or_create();
+        PAD_P2.store(std::env::var_os("T5_PAD_P2").is_some(), std::sync::atomic::Ordering::Relaxed);
         let mut i = Input {
             controls,
             parsed: Vec::new(),
@@ -501,8 +514,8 @@ pub fn read_input(
     for &(id, g) in &all {
         if !input.active.contains_key(&id) && gamepad_used(&input.origins, id, g) {
             input.active.insert(id, now);
-            let port = input.active.len();
-            ps2_runtime::diag::log(format!("gamepad {id}: first input, it is now the controller for port {}", port.min(2)));
+            let port = if PAD_P2.load(std::sync::atomic::Ordering::Relaxed) { 2 } else { input.active.len().min(2) };
+            ps2_runtime::diag::log(format!("gamepad {id}: first input, it is now the controller for port {port}"));
         }
     }
     if input.menu_open || crate::settings::MENU_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
@@ -517,8 +530,19 @@ pub fn read_input(
     let pads: Vec<(PadId, PadRef)> = if order.is_empty() { all.clone() } else { order };
     let none = ButtonInput::<KeyCode>::default();
     let none_m = ButtonInput::<MouseButton>::default();
-    let two = pads.len() >= 2 && input.active.len() >= 2;
-    let p1_pads: Vec<(PadId, PadRef)> = if two { pads[..1].to_vec() } else { pads.clone() };
+    if keys.just_pressed(KeyCode::F4) {
+        toggle_pad_p2();
+    }
+    let pad_p2 = PAD_P2.load(std::sync::atomic::Ordering::Relaxed);
+    let two = !pad_p2 && pads.len() >= 2 && input.active.len() >= 2;
+    let p1_pads: Vec<(PadId, PadRef)> = if pad_p2 { Vec::new() } else if two { pads[..1].to_vec() } else { pads.clone() };
+    let p2_pads: Option<Vec<(PadId, PadRef)>> = if pad_p2 {
+        (!pads.is_empty()).then(|| if input.active.is_empty() { pads.clone() } else { pads[..1].to_vec() })
+    } else if two {
+        Some(pads[1..2].to_vec())
+    } else {
+        None
+    };
     let dev1 = Devices { keys: &keys, mouse: &mouse, pads: p1_pads, origins: &input.origins, mouse_stick: ms, deadzone: c.deadzone };
     // Scripted presses of a measurement run (`--press`, t5_recomp::script).
     let b1 = input.buttons(&dev1) | t5_recomp::script::held();
@@ -528,8 +552,8 @@ pub fn read_input(
         s => s,
     };
     input.pad.set_sticks(0, s1);
-    if two {
-        let dev2 = Devices { keys: &none, mouse: &none_m, pads: pads[1..2].to_vec(), origins: &input.origins, mouse_stick: Vec2::ZERO, deadzone: c.deadzone };
+    if let Some(p2) = p2_pads {
+        let dev2 = Devices { keys: &none, mouse: &none_m, pads: p2, origins: &input.origins, mouse_stick: Vec2::ZERO, deadzone: c.deadzone };
         let b2 = input.buttons(&dev2);
         input.pad.set(1, b2, true);
         input.pad.set_sticks(1, input.sticks(&dev2));
