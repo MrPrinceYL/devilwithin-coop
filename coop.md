@@ -60,6 +60,20 @@ Die Mod nutzt das ohne Eingriff in den generierten Code (jeder Vsync, `coop_upda
 Port 2 liefert die Laufzeit schon (padman-HLE bedient beide Ports, `ps2-runtime/src/iop/pad.rs`;
 das Spiel liest beide Ports jeden Frame über 0x1024F8 → 0x101FC0).
 
+## Splitscreen (Prototyp, `T5_DW_SPLIT=1`)
+
+- Die Kamera ist ein Einzelstück ([0x41BD10]); ihr Datenblock (Pool 0x42B6B4, Schritt
+  [0x42B6A8]) wird nach **jedem fertigen Spielbild** gegen den zweiten getauscht (`split_swap`;
+  der zweite beginnt als Kopie mit Ziel +0xF0/+0xF4 = Figur von Spieler 2). Die Bilder wechseln
+  so zwischen den Kameras, jede wird jedes zweite Bild weitergerechnet.
+- „Fertiges Spielbild“ = `raster::RENDERED_TOTAL` (Kopie des fertigen Bildes auf den angezeigten
+  Puffer). Devil Within wechselt den Anzeigepuffer nie, der Flip-Zähler bleibt 1 – daran
+  scheiterte der erste Versuch (Nutzer: „funktioniert gar nicht“).
+- Die Laufzeit markiert jedes ausgegebene Bild mit der Kamera, die es zeichnete
+  (`ps2_runtime::SPLIT_VIEW` → `gs::Frame::view`, `FrameShared::by_view` hält das letzte je
+  Ansicht); das Fenster setzt links Spieler 1, rechts Spieler 2 zusammen (je die Bildmitte).
+  `T5_DW_SPLIT_LAG=n` verschiebt die Zuordnung um n Bilder (0 passt, Nutzertest).
+
 ## Testen
 
 Skript-Eingaben (`t5-headless` und Fenster `t5-bevy`): `--press P2:BUTTON@SEKUNDE[+HALTEN]`
@@ -88,9 +102,16 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
 | SELECT-Sprung | **funktioniert** | Bild: Spieler 2 neben Spieler 1 |
 | Verlassen / Wiedereinstieg | **funktioniert** | „Player 2 left“, Task-Kill 0x20B428, neuer Beitritt 0xf9b800 |
 | Friendly Fire | gebaut, Treffer zwischen den Spielern ungetestet | – |
+| Splitscreen-Prototyp (`T5_DW_SPLIT=1`) | **geteiltes Bild, Seiten richtig** (Nutzertest 26.10.); Kameras träge, Laufrichtung komisch, kein HUD für Spieler 2, nur Bildmitte je Hälfte | Nutzer |
 | Spieltest im Fenster (Nutzer = Spieler 2, F4/`T5_PAD_P2`) | Beitritt im Fenster geklappt (Log 26.10.) | Log |
 
 ## Offen / bekannte Grenzen
+
+- **Mehr als 2 Spieler (Nutzer 26.10.: später vielleicht):** Die PS2 hat nur zwei Pad-Ports (kein
+  Multitap emuliert). Darum Spieler 3+ nicht über die Pad-Ports des Spiels, sondern ihre Eingaben
+  vom Host direkt in den KI-Puffer ihrer Figur (gleicher Weg wie jetzt, nur Quelle Host statt
+  0x2A98A0). Der Koop-Zustand (`State::coop`) soll dafür eine Liste von Spielern werden, die
+  Ansichten (Splitscreen/Stream) N Kameras.
 
 - **Kamera** folgt nur Spieler 1 (Kamera-Tasks folgen ManMgr-Eintrag +0); SELECT holt Spieler 2
   zurück ins Bild. **Geplant (Nutzer 26.10.):** lokal Splitscreen, online ohne Splitscreen (jeder

@@ -62,13 +62,13 @@ fn main() {
                 let n = frames.take_if_new(seen, &mut buf);
                 if n != seen {
                     seen = n;
-                    kept.push((n, buf.width, buf.height, buf.rgba.clone()));
+                    kept.push((n, buf.width, buf.height, buf.rgba.clone(), buf.view));
                     i += 1;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            for (k, (n, w, h, px)) in kept.iter().enumerate() {
-                let _ = t5_recomp::write_png(&format!("{out}/burst_{k:03}_{n}.png"), *w, *h, px);
+            for (k, (n, w, h, px, v)) in kept.iter().enumerate() {
+                let _ = t5_recomp::write_png(&format!("{out}/burst_{k:03}_{n}_v{v}.png"), *w, *h, px);
             }
             eprintln!("[headless] burst: {i} frames");
         });

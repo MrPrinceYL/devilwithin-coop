@@ -756,6 +756,15 @@ struct State {
     coop: Option<u32>,
     coop_join: bool,
     coop_prev: u16,
+    /// Split screen prototype (T5_DW_SPLIT=1): the camera data block of the view not shown this
+    /// frame, and which view the game's camera holds now (0 = player 1).
+    split_cam: Option<Vec<u8>>,
+    split_view: u8,
+    /// Game pictures at the last camera switch (raster::RENDERED_TOTAL; Devil Within copies each
+    /// finished picture onto the displayed buffer instead of flipping, so the flip count stays 1).
+    split_flip: u64,
+    /// The views the last flips showed (oldest first), for T5_DW_SPLIT_LAG.
+    split_hist: std::collections::VecDeque<u8>,
 }
 
 fn position(m: &Machine, man: u32) -> [u32; 3] {
@@ -1173,6 +1182,71 @@ fn pad_as_game(m: &Machine, port: usize) -> (u32, [u32; 4]) {
     (buttons, [b4, b8, stick(a60), stick(-a64)])
 }
 
+/// The camera (one task, [0x41BD10], 0x154308 makes no second): its data block in the pool
+/// 0x42B6B4 (stride [0x42B6A8]).
+const CAMERA: u32 = 0x0041_BD10;
+
+/// Split screen prototype: whenever the game has finished a new picture, the game's
+/// camera data block is swapped with the other view's (the second one starts as a copy aimed at
+/// player 2), so the pictures alternate between the players' cameras; each camera advances every
+/// other picture. The picture just shown is tagged with the camera that drew it (plus
+/// T5_DW_SPLIT_LAG pictures of delay, to be found by watching), the window puts the two side by
+/// side.
+fn split_swap(m: &mut Machine, st: &mut State, p2: u32) {
+    let pictures = ps2_runtime::raster::RENDERED_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    if pictures == st.split_flip {
+        return;
+    }
+    if ps2_runtime::diag::enabled("T5_DW_COOPLOG") && pictures / 60 != st.split_flip / 60 {
+        ps2_runtime::diag::log(format!("split: picture {pictures}, camera of player {} drew it", st.split_view + 1));
+    }
+    st.split_flip = pictures;
+    let lag = std::env::var("T5_DW_SPLIT_LAG").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(4);
+    st.split_hist.push_back(st.split_view);
+    while st.split_hist.len() > lag + 1 {
+        st.split_hist.pop_front();
+    }
+    let shown = st.split_hist.front().copied().unwrap_or(0);
+    ps2_runtime::SPLIT_VIEW.store(shown, std::sync::atomic::Ordering::Relaxed);
+    ps2_runtime::SPLIT_ON.store(true, std::sync::atomic::Ordering::Relaxed);
+    let cam = word(m, CAMERA);
+    let c = if cam != 0 { camera_data(m, cam) } else { 0 };
+    let size = word(m, 0x0042_B6A8);
+    if c == 0 || !(0x100..=0x1000).contains(&size) {
+        st.split_cam = None;
+        return;
+    }
+    let now: Vec<u8> = (0..size).map(|i| ram_read(m, c + i, 1) as u8).collect();
+    let other = st.split_cam.take().unwrap_or_else(|| {
+        let mut o = now.clone();
+        o[0xF0..0xF4].copy_from_slice(&p2.to_le_bytes());
+        o[0xF4..0xF8].copy_from_slice(&word(m, p2).to_le_bytes());
+        o
+    });
+    for (i, b) in other.iter().enumerate() {
+        ram_write(m, c + i as u32, 1, *b as u64);
+    }
+    st.split_cam = Some(now);
+    st.split_view ^= 1;
+}
+
+/// Split screen off: player 1's camera back in the game, the window shows the whole picture.
+fn split_off(m: &mut Machine, st: &mut State) {
+    if let Some(other) = st.split_cam.take() {
+        let cam = word(m, CAMERA);
+        let c = if cam != 0 { camera_data(m, cam) } else { 0 };
+        if st.split_view == 1 && c != 0 && other.len() == word(m, 0x0042_B6A8) as usize {
+            for (i, b) in other.iter().enumerate() {
+                ram_write(m, c + i as u32, 1, *b as u64);
+            }
+        }
+    }
+    st.split_view = 0;
+    st.split_hist.clear();
+    ps2_runtime::SPLIT_ON.store(false, std::sync::atomic::Ordering::Relaxed);
+    ps2_runtime::SPLIT_VIEW.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Every vertical blank: player 2 joins with START on the other port (a Jin next to player 1,
 /// on his team), SELECT brings him next to player 1, SELECT + START leaves; while he plays the
 /// other port drives his character.
@@ -1214,6 +1288,11 @@ fn coop_update(m: &mut Machine, st: &mut State, playing: bool) {
             set_position(m, t, [pos[0] + 200.0, pos[1], pos[2]].map(f32::to_bits));
         }
         _ => {}
+    }
+    let split = ps2_runtime::diag::enabled("T5_DW_SPLIT") && playing;
+    match st.coop {
+        Some(t) if split => split_swap(m, st, t),
+        _ => split_off(m, st),
     }
     let Some(t) = st.coop else { return };
     // Player 1's team (the game gives a created man its profile's afterwards); with friendly
@@ -1435,6 +1514,10 @@ pub fn update(m: &mut Machine, out: &mut String) {
         coop: None,
         coop_join: false,
         coop_prev: 0,
+        split_cam: None,
+        split_view: 0,
+        split_flip: 0,
+        split_hist: std::collections::VecDeque::new(),
     });
     become_step(m, st);
     let living = characters(m);

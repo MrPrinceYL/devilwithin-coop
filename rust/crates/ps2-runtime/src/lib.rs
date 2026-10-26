@@ -282,6 +282,12 @@ pub fn boost_thread_on(slot: Option<usize>) {
 /// switches that set guest data (t5_recomp::devil_debug). Unset: nothing happens.
 pub static VBLANK_HOOK: std::sync::OnceLock<fn(&mut Machine)> = std::sync::OnceLock::new();
 
+/// Split screen (a mod hook): the player whose camera the game holds now, set by the game crate
+/// when it switches cameras; frames carry it (`gs::Frame::view`).
+pub static SPLIT_VIEW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Split screen on: the front end shows `FrameShared::by_view` side by side.
+pub static SPLIT_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn machine_opt() -> Option<&'static Machine> {
     unsafe { MACHINE.as_ref() }
 }

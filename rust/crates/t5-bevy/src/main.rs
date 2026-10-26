@@ -290,7 +290,31 @@ fn show_frame(
             *v = ((i as f32 / 255.0).powf(1.0 / settings.gamma) * 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
-    let n = s.frames.take_if_new(s.seen, &mut s.buf);
+    let mut n = s.frames.take_if_new(s.seen, &mut s.buf);
+    // Co-op split screen (coop.md): player 1's camera left, player 2's right, the middle half of
+    // each (same height, half the width).
+    if ps2_runtime::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed) && n != s.seen {
+        if let Ok(v) = s.frames.by_view.lock() {
+            let (w, h) = (s.buf.width as usize, s.buf.height as usize);
+            let fits = |f: &ps2_runtime::gs::Frame| f.width as usize == w && f.height as usize == h && f.rgba.len() == w * h * 4;
+            if fits(&v[0]) && fits(&v[1]) {
+                let half = w / 2;
+                for y in 0..h {
+                    let row = y * w * 4;
+                    for (k, f) in v.iter().enumerate() {
+                        let src = row + (w / 4) * 4;
+                        let dst = row + k * half * 4;
+                        s.buf.rgba[dst..dst + half * 4].copy_from_slice(&f.rgba[src..src + half * 4]);
+                    }
+                    for x in [half - 1, half] {
+                        s.buf.rgba[row + x * 4..row + x * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+                    }
+                }
+            } else {
+                n = s.seen;
+            }
+        }
+    }
     let restyle = s.smooth != settings.smooth;
     if n == s.seen && !restyle {
         return;

@@ -205,6 +205,8 @@ pub struct Frame {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub serial: u64,
+    /// Which player's camera the game held when the frame was shown (crate::SPLIT_VIEW).
+    pub view: u8,
 }
 
 #[derive(Default)]
@@ -213,6 +215,8 @@ pub struct FrameShared {
     /// Displayed frames and the game's own frame changes (the display buffer switched).
     pub frames: std::sync::atomic::AtomicU64,
     pub flips: std::sync::atomic::AtomicU64,
+    /// Split screen (crate::SPLIT_ON): the newest frame of each player's camera.
+    pub by_view: Mutex<[Frame; 2]>,
 }
 
 impl FrameShared {
@@ -231,6 +235,7 @@ impl FrameShared {
             out.rgba.clear();
             out.rgba.extend_from_slice(&f.rgba);
             out.serial = f.serial;
+            out.view = f.view;
         }
         f.serial
     }
@@ -1848,5 +1853,17 @@ pub fn readout(g: &Gs, dr: &DisplayRegs, st: &mut ReadoutState, shared: &FrameSh
         f.height = h;
         f.rgba = out;
         f.serial = st.frame_serial;
+        f.view = crate::SPLIT_VIEW.load(std::sync::atomic::Ordering::Relaxed);
+        if crate::SPLIT_ON.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Ok(mut v) = shared.by_view.lock() {
+                let slot = &mut v[(f.view & 1) as usize];
+                slot.width = f.width;
+                slot.height = f.height;
+                slot.rgba.clear();
+                slot.rgba.extend_from_slice(&f.rgba);
+                slot.serial = f.serial;
+                slot.view = f.view;
+            }
+        }
         crate::FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }

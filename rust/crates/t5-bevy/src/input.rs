@@ -360,7 +360,9 @@ impl Input {
     /// the HID reader for Sony pads.
     pub fn new(pad: Arc<PadShared>) -> Input {
         let controls = Controls::load_or_create();
-        PAD_P2.store(std::env::var_os("T5_PAD_P2").is_some(), std::sync::atomic::Ordering::Relaxed);
+        let pad_p2 = std::env::var_os("T5_PAD_P2").is_some();
+        PAD_P2.store(pad_p2, std::sync::atomic::Ordering::Relaxed);
+        ps2_runtime::diag::log(format!("input: gamepad on port {} at start (T5_PAD_P2)", if pad_p2 { 2 } else { 1 }));
         let mut i = Input {
             controls,
             parsed: Vec::new(),
