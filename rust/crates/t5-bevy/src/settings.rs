@@ -117,7 +117,7 @@ pub struct MenuState {
     selected: usize,
 }
 
-const ITEMS: usize = 10;
+const ITEMS: usize = 11;
 
 /// Apply the saved settings to the window at startup and build the (hidden) P settings menu.
 pub fn setup(mut commands: Commands, settings: Res<Settings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
@@ -198,6 +198,9 @@ pub fn menu(
                         let ff = &t5_recomp::devil_mod::FRIENDLY_FIRE;
                         ff.fetch_xor(true, Relaxed);
                     }
+                    9 => {
+                        t5_recomp::devil_mod::SPLIT_SCREEN.fetch_xor(true, Relaxed);
+                    }
                     _ => *s = Settings::default(),
                 }
                 *s = s.clone().sanitized();
@@ -222,6 +225,10 @@ pub fn menu(
                 format!(
                     "Friendly fire < {} >  (co-op)",
                     if t5_recomp::devil_mod::FRIENDLY_FIRE.load(Relaxed) { "On" } else { "Off" }
+                ),
+                format!(
+                    "Split screen  < {} >  (co-op)",
+                    if t5_recomp::devil_mod::SPLIT_SCREEN.load(Relaxed) { "On" } else { "Off" }
                 ),
                 "Reset to defaults  [Enter]".to_string(),
             ];

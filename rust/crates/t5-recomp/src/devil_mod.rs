@@ -516,6 +516,9 @@ fn name(m: &Machine, t: u32) -> String {
     format!("{prof} ({ai})")
 }
 
+/// Local co-op shows a split screen (settings menu; T5_DW_SPLIT=0 starts without).
+pub static SPLIT_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 /// Split screen: player 1 while the ManMgr entry alternates between the players (split_swap);
 /// 0 otherwise.
 static SPLIT_PLAYER1: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -1519,7 +1522,7 @@ fn coop_update(m: &mut Machine, st: &mut State, playing: bool) {
         }
         _ => {}
     }
-    let split = ps2_runtime::diag::enabled("T5_DW_SPLIT") && playing;
+    let split = SPLIT_SCREEN.load(std::sync::atomic::Ordering::Relaxed) && playing;
     match st.coop {
         Some(t) if split => split_swap(m, st, t),
         _ => split_off(m, st),
@@ -1713,44 +1716,49 @@ fn in_game(m: &Machine) -> bool {
 /// Every vertical blank while Devil Within runs: input, effects, menu text.
 pub fn update(m: &mut Machine, out: &mut String) {
     let mut g = STATE.lock().unwrap();
-    let st = g.get_or_insert_with(|| State {
-        open: false,
-        cur: 0,
-        prev_held: 0,
-        pick: 0,
-        profile: 0,
-        become_step: Become::Idle,
-        spawning: false,
-        before: Vec::new(),
-        noclip: None,
-        mod_top: None,
-        fetch: None,
-        become_pack: None,
-        hero_team: 0,
-        become_hero: None,
-        cam_bases: std::collections::HashMap::new(),
-        cam_heights: (0.0, 0, 0.0),
-        stage: 0,
-        item: 0,
-        object: 0,
-        stage_restore: 0,
-        switched: None,
-        god: false,
-        debug_on: false,
-        debug_game: 0,
-        konami: 0,
-        devil: false,
-        swap_team: true,
-        probe: false,
-        saved_pos: None,
-        spawn: std::collections::HashMap::new(),
-        last: String::new(),
-        coop: None,
-        coop_join: false,
-        coop_prev: 0,
-        split_view: 0,
-        split_flip: 0,
-        split_hist: std::collections::VecDeque::new(),
+    let st = g.get_or_insert_with(|| {
+        if std::env::var("T5_DW_SPLIT").is_ok_and(|v| v == "0") {
+            SPLIT_SCREEN.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        State {
+            open: false,
+            cur: 0,
+            prev_held: 0,
+            pick: 0,
+            profile: 0,
+            become_step: Become::Idle,
+            spawning: false,
+            before: Vec::new(),
+            noclip: None,
+            mod_top: None,
+            fetch: None,
+            become_pack: None,
+            hero_team: 0,
+            become_hero: None,
+            cam_bases: std::collections::HashMap::new(),
+            cam_heights: (0.0, 0, 0.0),
+            stage: 0,
+            item: 0,
+            object: 0,
+            stage_restore: 0,
+            switched: None,
+            god: false,
+            debug_on: false,
+            debug_game: 0,
+            konami: 0,
+            devil: false,
+            swap_team: true,
+            probe: false,
+            saved_pos: None,
+            spawn: std::collections::HashMap::new(),
+            last: String::new(),
+            coop: None,
+            coop_join: false,
+            coop_prev: 0,
+            split_view: 0,
+            split_flip: 0,
+            split_hist: std::collections::VecDeque::new(),
+        }
     });
     become_step(m, st);
     let living = characters(m);

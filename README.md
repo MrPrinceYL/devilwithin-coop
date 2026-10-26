@@ -49,7 +49,8 @@ takes a while), later runs start in seconds. The Tekken 5 disc image is read fro
   (PowerShell: `$env:T5_DW_DEBUG = "title"`).
 - **Co-op:** a second player presses START on the pad in port 2 in game and plays a second Jin
   (SELECT: back to player 1, SELECT + START: leave). F4 (or the P settings) puts the gamepad on
-  port 2 (keyboard stays port 1); friendly fire is in the P settings. See `coop.md`.
+  port 2 (keyboard stays port 1); split screen (16:9, on by default) and friendly fire are in the P
+  settings. See `coop.md`.
 - P opens the settings (volume, window mode, gamma, VSync, picture, FPS counter, faster disc
   loading). F1 shows the debug overlay. Holding F3 fast-forwards. F11 / Alt+Enter: fullscreen.
 - Memory cards are folders (`memcard\port0`, `memcard\port1`; `T5_MEMCARD` moves them).

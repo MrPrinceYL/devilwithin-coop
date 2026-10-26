@@ -91,8 +91,7 @@ fn main() {
     app.insert_resource(ClearColor(Color::BLACK)).add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Devil Within Mod".into(),
-            // Co-op split screen shows 16:9 (coop.md).
-            resolution: if std::env::var_os("T5_DW_SPLIT").is_some() { (1600, 900) } else { (1280, 960) }.into(),
+            resolution: (1280, 960).into(),
             ..default()
         }),
         ..default()

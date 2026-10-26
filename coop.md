@@ -60,7 +60,7 @@ Die Mod nutzt das ohne Eingriff in den generierten Code (jeder Vsync, `coop_upda
 Port 2 liefert die Laufzeit schon (padman-HLE bedient beide Ports, `ps2-runtime/src/iop/pad.rs`;
 das Spiel liest beide Ports jeden Frame über 0x1024F8 → 0x101FC0).
 
-## Splitscreen (Prototyp, `T5_DW_SPLIT=1`)
+## Splitscreen (Standard an; Einstellungen P → „Split screen“, `T5_DW_SPLIT=0` startet ohne)
 
 - Die Kamera ist ein Einzelstück ([0x41BD10]); ihr Datenblock (Pool 0x42B6B4, Schritt
   [0x42B6A8]) wird nach **jedem fertigen Spielbild** gegen den zweiten getauscht (`split_swap`;
@@ -102,7 +102,8 @@ komisch) gebaut, **noch nicht getestet**:
   zusätzlichen Update von Spieler 2s Kamera wird er gesichert und zurückgesetzt, so steht er am
   Bildanfang immer auf Spieler 1. In Spieler 2s Bildern setzt ihn das Spiel-Update noch auf
   Spieler 2 (Reihenfolge Kamera/Sound im Bild unbekannt) – Test nötig.
-- **16:9:** Fenster 1600×900 bei `T5_DW_SPLIT`; jede Hälfte = mittlere **2/3** des Spielbilds
+- **16:9:** Das Bild wird im Splitscreen 16:9 (im 4:3-Fenster mit Rand oben/unten; Vollbild
+  oder breites Fenster füllt es); jede Hälfte = mittlere **2/3** des Spielbilds
   (8:9 bei 4:3, nichts gestreckt). Beide Kameras im Splitscreen um **1,35** zurückgezogen
   (Abstand/Höhen +0x10/+0x0C/+0x20 je Ansicht, Spielwerte gemerkt, `split_zoom`); die
   Boss-Kamera-Skalierung pausiert solange.
@@ -139,7 +140,7 @@ T5_DW_COOPLOG=1 bash run/dwmod.sh coop 203 $P --press P2:START@185 --press P2:LS
 | SELECT-Sprung | **funktioniert** | Bild: Spieler 2 neben Spieler 1 |
 | Verlassen / Wiedereinstieg | **funktioniert** | „Player 2 left“, Task-Kill 0x20B428, neuer Beitritt 0xf9b800 |
 | Friendly Fire | gebaut, Treffer zwischen den Spielern ungetestet | – |
-| Splitscreen-Prototyp (`T5_DW_SPLIT=1`) | **geteiltes Bild, Seiten richtig, HUD für Spieler 2** (Nutzertests 26.10.); Laufen, träge Kameras, Räume/Gegner bei Spieler 2, Sound, 16:9 nachgebessert, ungetestet | Nutzer |
+| Splitscreen (Einstellung, Standard an) | **geteiltes Bild, Seiten richtig, HUD für Spieler 2** (Nutzertests 26.10.); Laufen, träge Kameras, Räume/Gegner bei Spieler 2, Sound, 16:9 nachgebessert, ungetestet | Nutzer |
 | Spieltest im Fenster (Nutzer = Spieler 2, F4/`T5_PAD_P2`) | Beitritt im Fenster geklappt (Log 26.10.) | Log |
 
 ## Offen / bekannte Grenzen
