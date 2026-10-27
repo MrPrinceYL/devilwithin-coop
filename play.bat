@@ -1,11 +1,11 @@
 @echo off
 rem Launch the Devil Within Mod (starts Devil Within directly; builds first if needed, the first
 rem build takes a while). T5_DW_DEBUG=title / dev opens the debug title / developer menu.
-rem The disc image defaults to E:\Decompilation\Game\Tekken 5 (USA).iso; set T5_DISC to use
+rem The disc image defaults to %~dp0game\Tekken 5 (USA).iso; set T5_DISC to use
 rem another one. Memory cards are folders: memcard\port0 and memcard\port1 next to this file.
 rem (No parenthesized blocks below: the ")" in "(USA)" would end them early.)
 setlocal
-if not defined T5_DISC set "T5_DISC=E:\Decompilation\Game\Tekken 5 (USA).iso"
+if not defined T5_DISC set "T5_DISC=%~dp0game\Tekken 5 (USA).iso"
 if exist "%T5_DISC%" goto disc_ok
 echo Disc image not found: "%T5_DISC%"
 echo Set T5_DISC to the path of the Tekken 5 .iso file.
