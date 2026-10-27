@@ -1,4 +1,23 @@
-# DevilWithinMod: Devil Within (from Tekken 5, SLUS-21059), recompiled and modded
+# Devil Within Co-op (WIP)
+
+**Work in progress.** *Devil Within*, the action mode on the Tekken 5 disc, statically recompiled to Rust and extended with a **local two-player co-op mode** (second player joins as a second Jin, optional split screen and friendly fire, see `coop.md`), a mod menu and the reconstructed developer menus (see `DevilWithin.md`).
+
+> **No game files in this repository.** It contains only the recompiler tooling, the console
+> runtime and the app written for this project. The game's code and data are generated
+> locally from **your own legally obtained disc image**; ROMs, disc images, extracted files and
+> generated code are never committed (see `.gitignore`). Tekken is a trademark of Bandai Namco
+> Entertainment. This is an unofficial fan/research project, not affiliated with or endorsed by
+> Bandai Namco or Sony.
+
+## Quick start: bring your own disc
+
+1. Dump your own copy of **Tekken 5 (USA, SLUS-21059)** to an `.iso`.
+2. Put it at `game/Tekken 5 (USA).iso` in this folder, or point `T5_DISC` at it.
+3. Install Python 3, a Rust toolchain, Ghidra 12.1.4 and ghidra-cli.
+4. Generate the code from your disc (see [Rebuilding from the disc](#rebuilding-from-the-disc)).
+   This creates `sheets/`, `src/` and the generated crates under `rust/`.
+5. Run `./play.sh` (Linux) or `play.bat` (Windows).
+
 
 Devil Within, the action mode on the Tekken 5 disc, statically recompiled to Rust and started
 directly (no Tekken 5 menus; Tekken 5 itself, StarBlade and Arcade History are not part of this
@@ -6,7 +25,7 @@ project). On top of the recompiled game sit a mod menu (become any character, sp
 items, no clip, every stage and boss fight, …), the reconstructed developer menus and an overlay.
 Everything that was found and built is documented in **`DevilWithin.md`**.
 
-This project was split off from `Decomps/Tekken5Decomp` (the 1:1 recompilation of the whole disc,
+This project was split off from the Tekken 5 recompilation (`tekken5-recomp`) (the 1:1 recompilation of the whole disc,
 branch `main`). The recompilation pipeline is the same, reduced to Devil Within; the mod parts
 (`t5-recomp/src/devil_*.rs`, the runtime hooks) are deliberately not 1:1.
 
@@ -32,7 +51,7 @@ rust/ (Bevy app)                                     src/raw_c/devil, src/units 
 
 Run **`play.bat`** (Windows) or **`play.sh`** (Linux). The first run builds everything (that
 takes a while), later runs start in seconds. The Tekken 5 disc image is read from `T5_DISC`
-(default `E:\Decompilation\Game\Tekken 5 (USA).iso`); the game starts directly in Devil Within.
+(default `game\Tekken 5 (USA).iso`); the game starts directly in Devil Within.
 
 - Keyboard and gamepads work at once. F2 rebinds controls (`%APPDATA%\DevilWithinMod\controls.json`).
   Default keyboard: arrows / WASD = D-pad, X or Space = Cross, C = Circle, Z = Square,
@@ -60,19 +79,19 @@ takes a while), later runs start in seconds. The Tekken 5 disc image is read fro
 
 Python 3, Ghidra 12.1.4 with ghidra-emotionengine-reloaded 2.1.38 (**patched by
 `tools/fix_ee_sleigh.py`**), ghidra-cli and a Rust toolchain. The work folder is
-`Decomps/DevilWithin` (`extracted/`, `ghidra/` project DEVILWITHIN, `export/`, `export_iop/`,
-`devTextEtc/`); `Decomps/Tekken5` belongs to Tekken5Decomp and is not used.
+`../DevilWithin` (`extracted/`, `ghidra/` project DEVILWITHIN, `export/`, `export_iop/`,
+`devTextEtc/`); the Tekken 5 work folder is not used.
 
 ```bat
-set ISO=E:\Decompilation\Game\Tekken 5 (USA).iso
-set W=E:\Decompilation\Decomps\DevilWithin
+set ISO=game\Tekken 5 (USA).iso
+set W=C:\work\DevilWithin
 cd tools
 python fix_ee_sleigh.py
 python ps2_extract.py "%ISO%" %W%\extracted
 python tk5data.py "%ISO%" %W%\extracted
 python make_elfs.py %W%\extracted
 python iop_modules.py %W%\extracted
-set GHIDRA=E:\Decompilation\Tools\ghidra-cli\target\release\ghidra.exe
+set GHIDRA=C:\tools\ghidra-cli\target\release\ghidra.exe
 set T5_WORK=%W%
 bash run_ghidra.sh devil
 set IOP=1& bash run_ghidra.sh
